@@ -32,7 +32,7 @@ const RiderProfileScreen: React.FC<Props> = ({ navigation }) => {
             const riderData = await StorageManager.getItem(constant.shareInstanceKey.userData);
             if (riderData && typeof riderData === 'object') {
                 if ('name' in riderData) setRiderName(riderData.name || 'Rider');
-                if ('username' in riderData) setUsername(riderData.username || '');
+                if ('email' in riderData) setUsername(riderData.email || '');
                 if ('phone' in riderData) setPhone(riderData.phone || '');
                 if ('vehicle_number' in riderData) setVehicleNumber(riderData.vehicle_number || '');
             }
@@ -119,7 +119,7 @@ const RiderProfileScreen: React.FC<Props> = ({ navigation }) => {
                                 {riderName}
                             </Text>
                             <Text style={[styles.username, { color: colors.white }]}>
-                                @{username}
+                                {username}
                             </Text>
                         </View>
                     </View>

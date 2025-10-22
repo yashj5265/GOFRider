@@ -25,8 +25,8 @@ const constant = {
     // API Endpoints (Update base URL in ApiManager.ts)
     apiEndPoints: {
         // Auth
-        riderLogin: 'api/rider/login',
-        riderLogout: 'api/rider/logout',
+        riderLogin: 'api/delivery/login',
+        riderLogout: 'api/delivery/logout',
 
         // Orders
         getAssignedOrders: 'api/rider/orders/assigned',

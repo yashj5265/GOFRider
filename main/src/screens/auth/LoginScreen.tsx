@@ -22,27 +22,21 @@ interface Props {
     navigation: NativeStackNavigationProp<any>;
 }
 
+interface DeliveryPerson {
+    id: number;
+    name: string;
+    email: string;
+    phone?: string;
+    status?: string;
+    created_at?: string;
+    updated_at?: string;
+}
+
 interface LoginResponse {
-    success: boolean;
+    success?: boolean;
     message?: string;
     token?: string;
-    data?: {
-        token?: string;
-        rider?: {
-            id: number;
-            name: string;
-            username: string;
-            phone?: string;
-            vehicle_number?: string;
-        };
-    };
-    rider?: {
-        id: number;
-        name: string;
-        username: string;
-        phone?: string;
-        vehicle_number?: string;
-    };
+    delivery_person?: DeliveryPerson;
 }
 
 const LoginScreen: React.FC<Props> = ({ navigation }) => {
@@ -69,33 +63,26 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
         try {
             console.log('🚴 Attempting rider login with:', username);
 
-            // When API is ready, use this:
             const response: LoginResponse = await ApiManager.post({
-                endpoint: constant.apiEndPoints.riderLogin, // Add this to your constants
+                endpoint: constant.apiEndPoints.riderLogin,
                 params: {
-                    username: username.trim(),
+                    email: username.trim(),
                     password: password
                 },
             });
 
             console.log('✅ Rider Login Response:', response);
 
-            if (response?.success || response?.token) {
-                const token = response?.token || response?.data?.token;
-
-                if (!token) {
-                    Alert.alert('Error', 'Login failed: No authentication token received');
-                    setLoading(false);
-                    return;
-                }
-
-                const riderData = response?.rider || response?.data?.rider;
+            // Check if login was successful
+            if (response?.token && response?.delivery_person) {
+                const token = response.token;
+                const deliveryPerson = response.delivery_person;
 
                 // Use AuthContext login function
-                await login(token, riderData);
+                await login(token, deliveryPerson);
 
                 console.log('✅ Rider login successful!');
-                Alert.alert('Success', `Welcome ${riderData?.name || 'Rider'}!`);
+                Alert.alert('Success', `Welcome ${deliveryPerson.name}!`);
 
             } else {
                 console.error('❌ Login failed:', response?.message);

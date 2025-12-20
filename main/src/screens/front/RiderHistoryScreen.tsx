@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import MainContainer from '../../container/MainContainer';
@@ -23,49 +23,18 @@ interface CompletedOrder {
 const RiderHistoryScreen: React.FC<Props> = ({ navigation }) => {
     const colors = useTheme();
     const [selectedFilter, setSelectedFilter] = useState<'today' | 'week' | 'month'>('today');
+    const [completedOrders, setCompletedOrders] = useState<CompletedOrder[]>([]);
+    const [loading, setLoading] = useState<boolean>(true);
 
-    // Dummy data - Replace with API
-    const completedOrders: CompletedOrder[] = [
-        {
-            id: '1',
-            orderNumber: 'ORD005',
-            customerName: 'Sneha Reddy',
-            amount: 620,
-            deliveredAt: '2:30 PM',
-            date: 'Today',
-            earnings: 50,
-        },
-        {
-            id: '2',
-            orderNumber: 'ORD004',
-            customerName: 'Vikram Singh',
-            amount: 890,
-            deliveredAt: '11:45 AM',
-            date: 'Today',
-            earnings: 60,
-        },
-        {
-            id: '3',
-            orderNumber: 'ORD003',
-            customerName: 'Amit Kumar',
-            amount: 320,
-            deliveredAt: '9:20 AM',
-            date: 'Today',
-            earnings: 40,
-        },
-        {
-            id: '4',
-            orderNumber: 'ORD002',
-            customerName: 'Priya Patel',
-            amount: 780,
-            deliveredAt: '6:15 PM',
-            date: 'Yesterday',
-            earnings: 55,
-        },
-    ];
+    // Note: History API endpoint will be implemented in future update
+    // For now, showing empty state
+    useEffect(() => {
+        // Future: Fetch completed orders from API based on selectedFilter
+        setLoading(false);
+    }, [selectedFilter]);
 
     const getFilteredOrders = () => {
-        // TODO: Filter based on selected filter when API is ready
+        // Future: Filter based on selected filter when API is ready
         return completedOrders;
     };
 
@@ -158,11 +127,31 @@ const RiderHistoryScreen: React.FC<Props> = ({ navigation }) => {
                     contentContainerStyle={styles.contentContainer}
                     showsVerticalScrollIndicator={false}
                 >
-                    {getFilteredOrders().map((order) => (
+                    {loading ? (
+                        <View style={styles.emptyContainer}>
+                            <Text style={styles.emptyIcon}>⏳</Text>
+                            <Text style={[styles.emptyText, { color: colors.textPrimary }]}>
+                                Loading history...
+                            </Text>
+                        </View>
+                    ) : completedOrders.length === 0 ? (
+                        <View style={styles.emptyContainer}>
+                            <Text style={styles.emptyIcon}>📦</Text>
+                            <Text style={[styles.emptyText, { color: colors.textPrimary }]}>
+                                No delivery history
+                            </Text>
+                            <Text style={[styles.emptySubtext, { color: colors.textDescription }]}>
+                                Your completed deliveries will appear here
+                            </Text>
+                        </View>
+                    ) : (
+                        getFilteredOrders().map((order) => (
                         <AppTouchableRipple
                             key={order.id}
                             style={[styles.historyCard, { backgroundColor: colors.backgroundSecondary }]}
-                            onPress={() => console.log('View order details:', order.id)}
+                            onPress={() => {
+                                // Future: Navigate to order details
+                            }}
                         >
                             <View style={styles.cardHeader}>
                                 <View>
@@ -209,7 +198,8 @@ const RiderHistoryScreen: React.FC<Props> = ({ navigation }) => {
                                 </View>
                             </View>
                         </AppTouchableRipple>
-                    ))}
+                    ))
+                    )}
                 </ScrollView>
             </View>
         </MainContainer>
@@ -346,5 +336,24 @@ const styles = StyleSheet.create({
     earningsText: {
         fontSize: fonts.size.font15,
         fontFamily: fonts.family.primaryBold,
+    },
+    emptyContainer: {
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 60,
+    },
+    emptyIcon: {
+        fontSize: 64,
+        marginBottom: 16,
+    },
+    emptyText: {
+        fontSize: fonts.size.font18,
+        fontFamily: fonts.family.primaryBold,
+        marginBottom: 8,
+    },
+    emptySubtext: {
+        fontSize: fonts.size.font14,
+        fontFamily: fonts.family.secondaryRegular,
+        textAlign: 'center',
     },
 });

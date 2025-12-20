@@ -22,39 +22,18 @@ const constant = {
         about: 'About',
     },
 
-    // API Endpoints (Update base URL in ApiManager.ts)
+    // API Endpoints - Matching Postman Collection
     apiEndPoints: {
         // Auth
-        riderLogin: 'api/delivery/login',
-        riderLogout: 'api/delivery/logout',
-
-        // Orders
-        getAssignedOrders: 'api/rider/orders/assigned',
-        getOrderDetails: 'api/rider/orders/detail',
-        acceptOrder: 'api/rider/orders/accept',
-        pickupOrder: 'api/rider/orders/pickup',
-        startDelivery: 'api/rider/orders/start-delivery',
-        completeDelivery: 'api/rider/orders/complete',
-        verifyConfirmationCode: 'api/rider/orders/verify-code',
-
-        // History
-        getDeliveryHistory: 'api/rider/history',
-        getTodayHistory: 'api/rider/history/today',
-        getWeekHistory: 'api/rider/history/week',
-        getMonthHistory: 'api/rider/history/month',
+        riderLogin: '/api/delivery/login',
+        riderLogout: '/api/delivery/logout',
 
         // Profile
-        getRiderProfile: 'api/rider/profile',
-        updateProfile: 'api/rider/profile/update',
-        changePassword: 'api/rider/change-password',
+        getProfile: '/api/delivery/profile',
 
-        // Earnings
-        getEarnings: 'api/rider/earnings',
-        getEarningsReport: 'api/rider/earnings/report',
-
-        // Stats
-        getStats: 'api/rider/stats',
-        getTodayStats: 'api/rider/stats/today',
+        // Orders
+        getOrders: '/api/delivery/orders',
+        updateStatus: '/api/delivery/update-status',
     },
 
     // Storage Keys (using same structure as admin app)

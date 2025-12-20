@@ -18,7 +18,7 @@ export interface ApiConfig {
     isFormData?: boolean;
 }
 
-const BASE_URL = "https://washier-joan-unturgid.ngrok-free.dev/";
+const BASE_URL = "https://gayatriorganicfarm.com";
 
 export default class ApiManager {
     static async request<T = any>({
@@ -36,36 +36,83 @@ export default class ApiManager {
             throw new Error("No internet connection");
         }
 
-        const url = `${BASE_URL}${`${endpoint}`}`;
+        const url = `${BASE_URL}${endpoint}`;
+
+        // 🔥 CRITICAL: For FormData, headers must be minimal
+        // React Native will automatically set Content-Type with boundary
         const headers: Record<string, string> = {
-            "Accept": "application/json",
-            "Content-Type": isFormData ? "multipart/form-data" : "application/json",
             "platform": Platform.OS,
         };
-        if (token) headers["Authorization"] = `Bearer ${token}`;
+
+        // Only add these headers for non-FormData requests
+        if (!isFormData) {
+            headers["Accept"] = "application/json";
+            headers["Content-Type"] = "application/json";
+        }
+
+        if (token) {
+            headers["Authorization"] = `Bearer ${token}`;
+        }
 
         const options: RequestInit = {
             method,
             headers,
         };
 
-        if (method !== "GET") {
-            options.body = isFormData ? params as any : JSON.stringify(params);
+        // Handle request body for non-GET requests
+        if (method !== "GET" && params) {
+            options.body = isFormData ? (params as any) : JSON.stringify(params);
         }
 
         try {
-            const response = await fetch(url, options);
-            const json = await response.json();
-
-            if (!response.ok) {
-                if (showError) console.warn(`❌ ${json.message || "Request failed"}`);
-                throw new Error(json.message || "Request failed");
+            if (__DEV__) {
+                console.log('[ApiManager] Request:', {
+                    url,
+                    method,
+                    isFormData,
+                    hasToken: !!token,
+                });
             }
 
-            if (showSuccess) console.log(`✅ ${json.message || "Success"}`);
+            const response = await fetch(url, options);
+
+            let json;
+            try {
+                json = await response.json();
+            } catch (parseError) {
+                const errorMsg = 'Invalid response from server';
+                console.error('[ApiManager] Failed to parse response:', parseError);
+                throw new Error(errorMsg);
+            }
+
+            if (__DEV__) {
+                console.log('[ApiManager] Response:', {
+                    status: response.status,
+                    ok: response.ok,
+                    endpoint,
+                });
+            }
+
+            if (!response.ok) {
+                const errorMessage = json.message || json.error || "Request failed";
+
+                if (showError) {
+                    console.warn(`❌ ${errorMessage}`);
+                }
+                throw new Error(errorMessage);
+            }
+
+            if (showSuccess && json.message) {
+                console.log(`✅ ${json.message}`);
+            }
+
             return json as ApiResponse<T>;
-        } catch (err) {
-            if (showError) console.error("API Error:", err);
+        } catch (err: any) {
+            // Handle network errors that don't have a message property
+            if (showError) {
+                const errorMessage = err.message || "Network error occurred";
+                console.error('[ApiManager] Error:', errorMessage);
+            }
             throw err;
         }
     }

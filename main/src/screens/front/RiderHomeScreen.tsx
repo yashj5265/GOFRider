@@ -1,25 +1,38 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, RefreshControl } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import MainContainer from '../../container/MainContainer';
 import { useTheme } from '../../contexts/ThemeProvider';
 import fonts from '../../styles/fonts';
 import AppTouchableRipple from '../../components/AppTouchableRipple';
 import StorageManager from '../../managers/StorageManager';
+import ApiManager from '../../managers/ApiManager';
 import constant from '../../utilities/constant';
 
 interface Props {
     navigation: NativeStackNavigationProp<any>;
 }
 
+interface Order {
+    id: number;
+    status: string;
+}
+
 const RiderHomeScreen: React.FC<Props> = ({ navigation }) => {
     const colors = useTheme();
     const [riderName, setRiderName] = useState<string>('Rider');
     const [refreshing, setRefreshing] = useState(false);
+    const [orders, setOrders] = useState<Order[]>([]);
+    const [pendingCount, setPendingCount] = useState<number>(0);
+    const [completedCount, setCompletedCount] = useState<number>(0);
 
-    useEffect(() => {
-        loadRiderData();
-    }, []);
+    useFocusEffect(
+        useCallback(() => {
+            loadRiderData();
+            fetchOrders();
+        }, [])
+    );
 
     const loadRiderData = async () => {
         try {
@@ -32,24 +45,84 @@ const RiderHomeScreen: React.FC<Props> = ({ navigation }) => {
         }
     };
 
+    const fetchOrders = async () => {
+        try {
+            const token = await StorageManager.getItem(constant.shareInstanceKey.authToken);
+            
+            const response = await ApiManager.get({
+                endpoint: constant.apiEndPoints.getOrders,
+                token: token || undefined,
+                showError: false, // Don't show error on home screen
+            });
+
+            if (response?.data && Array.isArray(response.data)) {
+                setOrders(response.data);
+                
+                // Calculate stats
+                const pending = response.data.filter((o: Order) => {
+                    const status = (o.status || '').toLowerCase();
+                    return status !== 'delivered' && status !== 'cancelled';
+                }).length;
+                
+                const completed = response.data.filter((o: Order) => {
+                    const status = (o.status || '').toLowerCase();
+                    return status === 'delivered';
+                }).length;
+                
+                setPendingCount(pending);
+                setCompletedCount(completed);
+            }
+        } catch (error) {
+            // Silently fail on home screen
+            if (__DEV__) {
+                console.log('Error fetching orders on home:', error);
+            }
+        }
+    };
+
     const onRefresh = async () => {
         setRefreshing(true);
-        // TODO: Refresh orders from API when ready
-        await loadRiderData();
-        setTimeout(() => setRefreshing(false), 1000);
+        await Promise.all([loadRiderData(), fetchOrders()]);
+        setRefreshing(false);
     };
 
     const todayStats = [
-        { label: 'Deliveries', value: '8', icon: '📦', color: '#4caf50' },
-        { label: 'Pending', value: '3', icon: '⏳', color: '#ff9800' },
-        { label: 'Earnings', value: '₹420', icon: '💰', color: '#2196f3' },
+        { label: 'Deliveries', value: completedCount.toString(), icon: '📦', color: '#4caf50' },
+        { label: 'Pending', value: pendingCount.toString(), icon: '⏳', color: '#ff9800' },
+        { label: 'Total', value: orders.length.toString(), icon: '📋', color: '#2196f3' },
     ];
 
     const quickActions = [
-        { id: 1, title: 'Pending Orders', icon: '📋', color: '#ff9800', count: 3 },
-        { id: 2, title: 'Completed', icon: '✅', color: '#4caf50', count: 8 },
-        { id: 3, title: 'My Profile', icon: '👤', color: '#2196f3' },
-        { id: 4, title: 'Support', icon: '📞', color: '#9c27b0' },
+        { 
+            id: 1, 
+            title: 'Pending Orders', 
+            icon: '📋', 
+            color: '#ff9800', 
+            count: pendingCount,
+            onPress: () => navigation.navigate('Orders')
+        },
+        { 
+            id: 2, 
+            title: 'Completed', 
+            icon: '✅', 
+            color: '#4caf50', 
+            count: completedCount,
+            onPress: () => navigation.navigate('History')
+        },
+        { 
+            id: 3, 
+            title: 'My Profile', 
+            icon: '👤', 
+            color: '#2196f3',
+            onPress: () => navigation.navigate('Profile')
+        },
+        { 
+            id: 4, 
+            title: 'Orders', 
+            icon: '📦', 
+            color: '#9c27b0',
+            onPress: () => navigation.navigate('Orders')
+        },
     ];
 
     return (
@@ -130,7 +203,11 @@ const RiderHomeScreen: React.FC<Props> = ({ navigation }) => {
                                     styles.actionCard,
                                     { backgroundColor: colors.backgroundSecondary },
                                 ]}
-                                onPress={() => console.log('Action:', action.title)}
+                                onPress={action.onPress || (() => {
+                                    if (__DEV__) {
+                                        console.log('Action:', action.title);
+                                    }
+                                })}
                             >
                                 <View>
                                     <Text style={styles.actionIcon}>{action.icon}</Text>

@@ -178,7 +178,12 @@ const RiderProfileScreen: React.FC<Props> = ({ navigation }) => {
                                     <View key={item.id}>
                                         <AppTouchableRipple
                                             style={styles.menuItem}
-                                            onPress={() => console.log('Navigate to:', item.route)}
+                                            onPress={() => {
+                                                // Future: Implement navigation for other routes
+                                                if (__DEV__) {
+                                                    console.log('Navigate to:', item.route);
+                                                }
+                                            }}
                                         >
                                             <View style={styles.menuItemLeft}>
                                                 <Text style={styles.menuIcon}>{item.icon}</Text>

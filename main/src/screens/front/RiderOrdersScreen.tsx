@@ -1,135 +1,220 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Alert } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, Alert, RefreshControl, Linking, Modal, TextInput, Platform, KeyboardAvoidingView } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import MainContainer from '../../container/MainContainer';
 import { useTheme } from '../../contexts/ThemeProvider';
 import fonts from '../../styles/fonts';
 import AppTouchableRipple from '../../components/AppTouchableRipple';
-import AppTextInput from '../../components/AppTextInput';
+import ApiManager from '../../managers/ApiManager';
+import StorageManager from '../../managers/StorageManager';
+import constant from '../../utilities/constant';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 interface Props {
     navigation: NativeStackNavigationProp<any>;
 }
 
-// Dummy order interface - replace with API types
+// Order interface matching API response
 interface Order {
-    id: string;
-    orderNumber: string;
-    customerName: string;
-    customerPhone: string;
-    address: string;
-    items: number;
-    amount: number;
-    paymentMode: 'COD';
-    status: 'assigned' | 'picked' | 'delivering';
-    assignedTime: string;
+    id: number;
+    order_number?: string;
+    order_id?: number;
+    customer_name?: string;
+    customer_phone?: string;
+    address?: string;
+    full_address?: string;
+    items_count?: number;
+    total_amount?: number;
+    amount?: number;
+    payment_mode?: string;
+    status: string;
+    created_at?: string;
+    assigned_at?: string;
+    delivery_person_id?: number;
 }
 
 const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
     const colors = useTheme();
-    const [confirmationCode, setConfirmationCode] = useState('');
+    const [orders, setOrders] = useState<Order[]>([]);
+    const [loading, setLoading] = useState<boolean>(true);
+    const [refreshing, setRefreshing] = useState<boolean>(false);
+    const [updatingOrderId, setUpdatingOrderId] = useState<number | null>(null);
+    const [showConfirmationModal, setShowConfirmationModal] = useState<boolean>(false);
+    const [confirmationCode, setConfirmationCode] = useState<string>('');
+    const [currentOrder, setCurrentOrder] = useState<Order | null>(null);
 
-    // Dummy data - Replace with API call
-    const pendingOrders: Order[] = [
-        {
-            id: '1',
-            orderNumber: 'ORD001',
-            customerName: 'Rahul Sharma',
-            customerPhone: '+91 98765 43210',
-            address: '123, MG Road, Indore, MP - 452001',
-            items: 3,
-            amount: 450,
-            paymentMode: 'COD',
-            status: 'assigned',
-            assignedTime: '10 mins ago',
-        },
-        {
-            id: '2',
-            orderNumber: 'ORD002',
-            customerName: 'Priya Patel',
-            customerPhone: '+91 98765 43211',
-            address: '456, AB Road, Indore, MP - 452002',
-            items: 5,
-            amount: 780,
-            paymentMode: 'COD',
-            status: 'picked',
-            assignedTime: '25 mins ago',
-        },
-    ];
+    // Load orders when screen is focused
+    useFocusEffect(
+        useCallback(() => {
+            fetchOrders();
+        }, [])
+    );
+
+    const fetchOrders = async (isRefresh = false) => {
+        if (isRefresh) {
+            setRefreshing(true);
+        } else {
+            setLoading(true);
+        }
+
+        try {
+            const token = await StorageManager.getItem(constant.shareInstanceKey.authToken);
+            
+            const response = await ApiManager.get({
+                endpoint: constant.apiEndPoints.getOrders,
+                token: token || undefined,
+                showError: true,
+            });
+
+            if (__DEV__) {
+                console.log('✅ Orders Response:', response);
+            }
+
+            // Handle different response structures
+            let ordersData: Order[] = [];
+            if (response?.data && Array.isArray(response.data)) {
+                ordersData = response.data;
+            } else if (response?.orders && Array.isArray(response.orders)) {
+                ordersData = response.orders;
+            } else if (Array.isArray(response)) {
+                ordersData = response;
+            }
+
+            setOrders(ordersData);
+        } catch (error: any) {
+            console.error('❌ Fetch Orders Error:', error);
+            setOrders([]);
+        } finally {
+            setLoading(false);
+            setRefreshing(false);
+        }
+    };
+
+    const onRefresh = () => {
+        fetchOrders(true);
+    };
 
     const getStatusInfo = (status: string) => {
-        switch (status) {
+        const statusLower = status?.toLowerCase() || '';
+        switch (statusLower) {
             case 'assigned':
-                return { label: 'New', color: '#ff9800', action: 'Accept Order' };
+            case 'pending':
+                return { label: 'Assigned', color: '#ff9800', action: 'Mark as Picked', nextStatus: 'picked' };
             case 'picked':
-                return { label: 'Picked Up', color: '#2196f3', action: 'Start Delivery' };
+            case 'picked_up':
+                return { label: 'Picked Up', color: '#2196f3', action: 'Start Delivery', nextStatus: 'delivering' };
             case 'delivering':
-                return { label: 'Delivering', color: '#9c27b0', action: 'Complete Delivery' };
+            case 'out_for_delivery':
+                return { label: 'Delivering', color: '#9c27b0', action: 'Complete Delivery', nextStatus: 'delivered' };
+            case 'delivered':
+                return { label: 'Delivered', color: '#4caf50', action: 'Completed', nextStatus: null };
             default:
-                return { label: 'Unknown', color: colors.textLabel, action: 'View' };
+                return { label: status || 'Unknown', color: colors.textLabel, action: 'View', nextStatus: null };
+        }
+    };
+
+    const updateOrderStatus = async (order: Order, newStatus: string) => {
+        if (updatingOrderId === order.id) return;
+
+        setUpdatingOrderId(order.id);
+        try {
+            const token = await StorageManager.getItem(constant.shareInstanceKey.authToken);
+
+            const response = await ApiManager.post({
+                endpoint: constant.apiEndPoints.updateStatus,
+                params: {
+                    order_id: order.id,
+                    status: newStatus,
+                },
+                token: token || undefined,
+                showError: true,
+                showSuccess: true,
+            });
+
+            if (__DEV__) {
+                console.log('✅ Status Update Response:', response);
+            }
+
+            Alert.alert('Success', `Order status updated to ${newStatus}`);
+            // Refresh orders list
+            await fetchOrders(true);
+        } catch (error: any) {
+            console.error('❌ Update Status Error:', error);
+            Alert.alert('Error', error.message || 'Failed to update order status');
+        } finally {
+            setUpdatingOrderId(null);
         }
     };
 
     const handleOrderAction = (order: Order) => {
         const statusInfo = getStatusInfo(order.status);
 
-        if (order.status === 'delivering') {
-            // Show confirmation code dialog
-            Alert.prompt(
-                'Complete Delivery',
-                `Enter the confirmation code from ${order.customerName}`,
-                [
-                    {
-                        text: 'Cancel',
-                        style: 'cancel',
-                    },
-                    {
-                        text: 'Confirm',
-                        onPress: (code) => handleConfirmDelivery(order, code || ''),
-                    },
-                ],
-                'plain-text',
-                '',
-                'numeric'
-            );
+        if (!statusInfo.nextStatus) {
+            Alert.alert('Info', 'This order is already completed.');
+            return;
+        }
+
+        const orderNumber = order.order_number || order.order_id || `#${order.id}`;
+        const customerName = order.customer_name || 'Customer';
+
+        // If completing delivery, show confirmation code modal
+        if (statusInfo.nextStatus === 'delivered') {
+            setCurrentOrder(order);
+            setConfirmationCode('');
+            setShowConfirmationModal(true);
         } else {
-            // Show confirmation for other actions
             Alert.alert(
                 statusInfo.action,
-                `Order #${order.orderNumber} - ${order.customerName}`,
+                `Order ${orderNumber} - ${customerName}\n\nAre you sure you want to proceed?`,
                 [
                     { text: 'Cancel', style: 'cancel' },
                     {
-                        text: statusInfo.action,
-                        onPress: () => {
-                            console.log(`${statusInfo.action} for order:`, order.id);
-                            // TODO: Call API to update order status
-                            Alert.alert('Success', `Order ${statusInfo.action.toLowerCase()} successfully!`);
-                        },
+                        text: 'Confirm',
+                        onPress: () => updateOrderStatus(order, statusInfo.nextStatus!),
                     },
                 ]
             );
         }
     };
 
-    const handleConfirmDelivery = (order: Order, code: string) => {
-        if (!code || code.length < 4) {
-            Alert.alert('Error', 'Please enter a valid confirmation code');
+    const handleCallCustomer = (phone: string) => {
+        if (!phone) {
+            Alert.alert('Error', 'Phone number not available');
             return;
         }
 
-        // TODO: Verify code with API
-        console.log('Confirming delivery with code:', code);
-        Alert.alert(
-            'Delivery Completed',
-            `Order #${order.orderNumber} has been delivered successfully!\n\nAmount Collected: ₹${order.amount} (COD)`
-        );
+        const phoneNumber = phone.replace(/[^0-9]/g, ''); // Remove non-numeric characters
+        const phoneUrl = `tel:${phoneNumber}`;
+
+        Linking.canOpenURL(phoneUrl)
+            .then((supported) => {
+                if (supported) {
+                    return Linking.openURL(phoneUrl);
+                } else {
+                    Alert.alert('Error', 'Phone calls are not supported on this device');
+                }
+            })
+            .catch((err) => {
+                console.error('Error opening phone:', err);
+                Alert.alert('Error', 'Failed to open phone dialer');
+            });
     };
 
-    const handleCallCustomer = (phone: string) => {
-        console.log('Calling customer:', phone);
-        // TODO: Implement phone call using Linking
-        Alert.alert('Call Customer', phone);
+    const formatOrderNumber = (order: Order): string => {
+        return order.order_number || `ORD${order.id}` || `#${order.id}`;
+    };
+
+    const formatAddress = (order: Order): string => {
+        return order.full_address || order.address || 'Address not available';
+    };
+
+    const formatAmount = (order: Order): number => {
+        return order.total_amount || order.amount || 0;
+    };
+
+    const formatItemsCount = (order: Order): number => {
+        return order.items_count || 0;
     };
 
     return (
@@ -137,6 +222,7 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
             statusBarColor={colors.themePrimary}
             statusBarStyle="light-content"
             isInternetRequired={false}
+            showLoader={loading && orders.length === 0}
         >
             <View style={[styles.container, { backgroundColor: colors.backgroundPrimary }]}>
                 {/* Header */}
@@ -146,7 +232,7 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
                     </Text>
                     <View style={[styles.countBadge, { backgroundColor: colors.white }]}>
                         <Text style={[styles.countText, { color: colors.themePrimary }]}>
-                            {pendingOrders.length}
+                            {orders.length}
                         </Text>
                     </View>
                 </View>
@@ -156,8 +242,22 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
                     style={styles.content}
                     contentContainerStyle={styles.contentContainer}
                     showsVerticalScrollIndicator={false}
+                    refreshControl={
+                        <RefreshControl
+                            refreshing={refreshing}
+                            onRefresh={onRefresh}
+                            colors={[colors.themePrimary]}
+                        />
+                    }
                 >
-                    {pendingOrders.length === 0 ? (
+                    {loading && orders.length === 0 ? (
+                        <View style={styles.emptyContainer}>
+                            <Text style={styles.emptyIcon}>⏳</Text>
+                            <Text style={[styles.emptyText, { color: colors.textPrimary }]}>
+                                Loading orders...
+                            </Text>
+                        </View>
+                    ) : orders.length === 0 ? (
                         <View style={styles.emptyContainer}>
                             <Text style={styles.emptyIcon}>📦</Text>
                             <Text style={[styles.emptyText, { color: colors.textPrimary }]}>
@@ -168,8 +268,16 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
                             </Text>
                         </View>
                     ) : (
-                        pendingOrders.map((order) => {
+                        orders.map((order) => {
                             const statusInfo = getStatusInfo(order.status);
+                            const orderNumber = formatOrderNumber(order);
+                            const customerName = order.customer_name || 'Customer';
+                            const customerPhone = order.customer_phone || '';
+                            const address = formatAddress(order);
+                            const amount = formatAmount(order);
+                            const itemsCount = formatItemsCount(order);
+                            const isUpdating = updatingOrderId === order.id;
+
                             return (
                                 <View
                                     key={order.id}
@@ -182,11 +290,13 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
                                     <View style={styles.orderHeader}>
                                         <View>
                                             <Text style={[styles.orderNumber, { color: colors.themePrimary }]}>
-                                                #{order.orderNumber}
+                                                {orderNumber}
                                             </Text>
-                                            <Text style={[styles.assignedTime, { color: colors.textLabel }]}>
-                                                {order.assignedTime}
-                                            </Text>
+                                            {order.assigned_at && (
+                                                <Text style={[styles.assignedTime, { color: colors.textLabel }]}>
+                                                    Assigned: {new Date(order.assigned_at).toLocaleString()}
+                                                </Text>
+                                            )}
                                         </View>
                                         <View
                                             style={[
@@ -210,29 +320,31 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
                                         <View style={styles.infoRow}>
                                             <Text style={styles.infoIcon}>👤</Text>
                                             <Text style={[styles.customerName, { color: colors.textPrimary }]}>
-                                                {order.customerName}
+                                                {customerName}
                                             </Text>
                                         </View>
 
-                                        <View style={styles.infoRow}>
-                                            <Text style={styles.infoIcon}>📞</Text>
-                                            <Text style={[styles.phoneText, { color: colors.textPrimary }]}>
-                                                {order.customerPhone}
-                                            </Text>
-                                            <AppTouchableRipple
-                                                style={[styles.callButton, { backgroundColor: colors.themePrimary }]}
-                                                onPress={() => handleCallCustomer(order.customerPhone)}
-                                            >
-                                                <Text style={[styles.callButtonText, { color: colors.white }]}>
-                                                    Call
+                                        {customerPhone && (
+                                            <View style={styles.infoRow}>
+                                                <Text style={styles.infoIcon}>📞</Text>
+                                                <Text style={[styles.phoneText, { color: colors.textPrimary }]}>
+                                                    {customerPhone}
                                                 </Text>
-                                            </AppTouchableRipple>
-                                        </View>
+                                                <AppTouchableRipple
+                                                    style={[styles.callButton, { backgroundColor: colors.themePrimary }]}
+                                                    onPress={() => handleCallCustomer(customerPhone)}
+                                                >
+                                                    <Text style={[styles.callButtonText, { color: colors.white }]}>
+                                                        Call
+                                                    </Text>
+                                                </AppTouchableRipple>
+                                            </View>
+                                        )}
 
                                         <View style={styles.infoRow}>
                                             <Text style={styles.infoIcon}>📍</Text>
                                             <Text style={[styles.addressText, { color: colors.textDescription }]}>
-                                                {order.address}
+                                                {address}
                                             </Text>
                                         </View>
                                     </View>
@@ -244,7 +356,7 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
                                                 Items:
                                             </Text>
                                             <Text style={[styles.detailValue, { color: colors.textPrimary }]}>
-                                                {order.items}
+                                                {itemsCount}
                                             </Text>
                                         </View>
 
@@ -258,7 +370,7 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
                                                     { color: colors.themePrimary },
                                                 ]}
                                             >
-                                                ₹{order.amount}
+                                                ₹{amount}
                                             </Text>
                                         </View>
 
@@ -273,24 +385,31 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
                                                 ]}
                                             >
                                                 <Text style={[styles.codText, { color: colors.white }]}>
-                                                    {order.paymentMode}
+                                                    {order.payment_mode || 'COD'}
                                                 </Text>
                                             </View>
                                         </View>
                                     </View>
 
                                     {/* Action Button */}
-                                    <AppTouchableRipple
-                                        style={[
-                                            styles.actionButton,
-                                            { backgroundColor: statusInfo.color },
-                                        ]}
-                                        onPress={() => handleOrderAction(order)}
-                                    >
-                                        <Text style={[styles.actionButtonText, { color: colors.white }]}>
-                                            {statusInfo.action}
-                                        </Text>
-                                    </AppTouchableRipple>
+                                    {statusInfo.nextStatus && (
+                                        <AppTouchableRipple
+                                            style={[
+                                                styles.actionButton,
+                                                {
+                                                    backgroundColor: isUpdating
+                                                        ? colors.buttonDisabled
+                                                        : statusInfo.color,
+                                                },
+                                            ]}
+                                            onPress={() => handleOrderAction(order)}
+                                            disabled={isUpdating}
+                                        >
+                                            <Text style={[styles.actionButtonText, { color: colors.white }]}>
+                                                {isUpdating ? 'Updating...' : statusInfo.action}
+                                            </Text>
+                                        </AppTouchableRipple>
+                                    )}
                                 </View>
                             );
                         })
@@ -467,6 +586,97 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
     actionButtonText: {
+        fontSize: fonts.size.font15,
+        fontFamily: fonts.family.primaryBold,
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 20,
+    },
+    modalContent: {
+        width: '100%',
+        maxWidth: 400,
+        borderRadius: 16,
+        padding: 0,
+        elevation: 8,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+    },
+    modalHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: 20,
+        borderBottomWidth: 1,
+        borderBottomColor: '#E0E0E0',
+    },
+    modalTitle: {
+        fontSize: fonts.size.font18,
+        fontFamily: fonts.family.primaryBold,
+    },
+    modalCloseButton: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        backgroundColor: '#F5F5F5',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    modalBody: {
+        padding: 20,
+    },
+    orderInfoBox: {
+        backgroundColor: '#F5F5F5',
+        padding: 12,
+        borderRadius: 8,
+        marginBottom: 16,
+    },
+    orderInfoText: {
+        fontSize: fonts.size.font13,
+        fontFamily: fonts.family.secondaryRegular,
+        marginBottom: 4,
+    },
+    modalLabel: {
+        fontSize: fonts.size.font14,
+        fontFamily: fonts.family.primaryMedium,
+        marginBottom: 12,
+    },
+    confirmationInput: {
+        borderWidth: 1.5,
+        borderRadius: 10,
+        padding: 16,
+        fontSize: fonts.size.font18,
+        fontFamily: fonts.family.primaryBold,
+        textAlign: 'center',
+        letterSpacing: 8,
+        marginBottom: 20,
+    },
+    modalActions: {
+        flexDirection: 'row',
+        gap: 12,
+    },
+    modalCancelButton: {
+        flex: 1,
+        paddingVertical: 14,
+        borderRadius: 10,
+        alignItems: 'center',
+    },
+    modalCancelText: {
+        fontSize: fonts.size.font15,
+        fontFamily: fonts.family.primaryBold,
+    },
+    modalConfirmButton: {
+        flex: 1,
+        paddingVertical: 14,
+        borderRadius: 10,
+        alignItems: 'center',
+    },
+    modalConfirmText: {
         fontSize: fonts.size.font15,
         fontFamily: fonts.family.primaryBold,
     },

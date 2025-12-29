@@ -34,6 +34,7 @@ const constant = {
         // Orders
         getOrders: '/api/delivery/orders',
         updateStatus: '/api/delivery/update-status',
+        verifyOTP: "/api/delivery/verify-otp",
     },
 
     // Storage Keys (using same structure as admin app)

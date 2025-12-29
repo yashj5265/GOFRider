@@ -17,26 +17,10 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import AppTouchableRipple from '../../components/AppTouchableRipple';
 import MainContainer from '../../container/MainContainer';
 import { useAuth } from '../../contexts/AuthContext';
+import { RiderLoginResponseModel } from '../../dataModels/models';
 
 interface Props {
     navigation: NativeStackNavigationProp<any>;
-}
-
-interface DeliveryPerson {
-    id: number;
-    name: string;
-    email: string;
-    phone?: string;
-    status?: string;
-    created_at?: string;
-    updated_at?: string;
-}
-
-interface LoginResponse {
-    success?: boolean;
-    message?: string;
-    token?: string;
-    delivery_person?: DeliveryPerson;
 }
 
 const LoginScreen: React.FC<Props> = ({ navigation }) => {
@@ -63,7 +47,7 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
         try {
             console.log('🚴 Attempting rider login with:', username);
 
-            const response: LoginResponse = await ApiManager.post({
+            const response = await ApiManager.post<RiderLoginResponseModel>({
                 endpoint: constant.apiEndPoints.riderLogin,
                 params: {
                     email: username.trim(),

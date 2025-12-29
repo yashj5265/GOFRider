@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView, Alert } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import MainContainer from '../../container/MainContainer';
@@ -6,97 +6,362 @@ import { useTheme } from '../../contexts/ThemeProvider';
 import { useAuth } from '../../contexts/AuthContext';
 import fonts from '../../styles/fonts';
 import AppTouchableRipple from '../../components/AppTouchableRipple';
-import StorageManager from '../../managers/StorageManager';
+import StorageManager, { StorageKey } from '../../managers/StorageManager';
 import ApiManager from '../../managers/ApiManager';
 import constant from '../../utilities/constant';
+import { DeliveryPersonModel } from '../../dataModels/models';
+
+// ============================================================================
+// TYPES
+// ============================================================================
 
 interface Props {
     navigation: NativeStackNavigationProp<any>;
 }
 
+interface MenuItem {
+    id: number;
+    label: string;
+    icon: string;
+    route: string;
+}
+
+interface MenuSection {
+    title: string;
+    items: MenuItem[];
+}
+
+interface ProfileDetail {
+    icon: string;
+    label: string;
+    value: string;
+}
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+const DEFAULT_VALUES = {
+    RIDER_NAME: 'Rider',
+    EMPTY_STRING: '',
+    NOT_PROVIDED: 'Not provided',
+} as const;
+
+const ICONS = {
+    PHONE: '📞',
+    VEHICLE: '🏍️',
+    EDIT: '✏️',
+    PASSWORD: '🔒',
+    EARNINGS: '💰',
+    STATS: '📊',
+    HELP: '❓',
+    INFO: 'ℹ️',
+    LOGOUT: '🚪',
+    ARROW: '›',
+} as const;
+
+const ALERT_MESSAGES = {
+    LOGOUT_TITLE: 'Logout',
+    LOGOUT_MESSAGE: 'Are you sure you want to logout?',
+    LOGOUT_ERROR: 'Failed to logout. Please try again.',
+    CANCEL: 'Cancel',
+    LOGOUT: 'Logout',
+} as const;
+
+const APP_VERSION = 'v1.0.0';
+const APP_NAME = 'GOF Rider';
+
+const LOGOUT_BUTTON_COLOR = '#ff4444';
+
+// ============================================================================
+// MENU CONFIGURATION
+// ============================================================================
+
+const MENU_SECTIONS: MenuSection[] = [
+    {
+        title: 'Account',
+        items: [
+            { id: 1, label: 'Edit Profile', icon: ICONS.EDIT, route: 'EditProfile' },
+            { id: 2, label: 'Change Password', icon: ICONS.PASSWORD, route: 'ChangePassword' },
+        ],
+    },
+    {
+        title: 'Delivery',
+        items: [
+            { id: 3, label: 'Earnings Report', icon: ICONS.EARNINGS, route: 'Earnings' },
+            { id: 4, label: 'Delivery Stats', icon: ICONS.STATS, route: 'Stats' },
+        ],
+    },
+    {
+        title: 'Support',
+        items: [
+            { id: 5, label: 'Help & Support', icon: ICONS.HELP, route: 'Support' },
+            { id: 6, label: 'About', icon: ICONS.INFO, route: 'About' },
+        ],
+    },
+];
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Extracts rider data from storage model
+ */
+const extractRiderData = (riderData: DeliveryPersonModel | null) => {
+    if (!riderData) {
+        return {
+            name: DEFAULT_VALUES.RIDER_NAME,
+            email: DEFAULT_VALUES.EMPTY_STRING,
+            phone: DEFAULT_VALUES.EMPTY_STRING,
+            vehicleNumber: DEFAULT_VALUES.EMPTY_STRING,
+        };
+    }
+
+    return {
+        name: riderData.name || DEFAULT_VALUES.RIDER_NAME,
+        email: riderData.email || DEFAULT_VALUES.EMPTY_STRING,
+        phone: riderData.phone || DEFAULT_VALUES.EMPTY_STRING,
+        // Note: vehicle_number is not in the API response model, keeping for backward compatibility
+        vehicleNumber: 'vehicle_number' in riderData ? (riderData as any).vehicle_number || DEFAULT_VALUES.EMPTY_STRING : DEFAULT_VALUES.EMPTY_STRING,
+    };
+};
+
+/**
+ * Gets the first letter of name for avatar
+ */
+const getAvatarLetter = (name: string): string => {
+    return name.charAt(0).toUpperCase();
+};
+
+/**
+ * Formats version string
+ */
+const getVersionString = (): string => {
+    return `${APP_NAME} ${APP_VERSION}`;
+};
+
+// ============================================================================
+// COMPONENT
+// ============================================================================
+
 const RiderProfileScreen: React.FC<Props> = ({ navigation }) => {
     const colors = useTheme();
     const { logout } = useAuth();
-    const [riderName, setRiderName] = useState<string>('Rider');
-    const [username, setUsername] = useState<string>('');
-    const [phone, setPhone] = useState<string>('');
-    const [vehicleNumber, setVehicleNumber] = useState<string>('');
-    const [loading, setLoading] = useState(false);
 
-    useEffect(() => {
-        loadRiderData();
-    }, []);
+    // ========================================================================
+    // STATE
+    // ========================================================================
 
-    const loadRiderData = async () => {
+    const [riderName, setRiderName] = useState<string>(DEFAULT_VALUES.RIDER_NAME);
+    const [username, setUsername] = useState<string>(DEFAULT_VALUES.EMPTY_STRING);
+    const [phone, setPhone] = useState<string>(DEFAULT_VALUES.EMPTY_STRING);
+    const [vehicleNumber, setVehicleNumber] = useState<string>(DEFAULT_VALUES.EMPTY_STRING);
+    const [loading, setLoading] = useState<boolean>(false);
+
+    // ========================================================================
+    // API CALLS
+    // ========================================================================
+
+    const loadRiderData = useCallback(async () => {
         try {
-            const riderData = await StorageManager.getItem(constant.shareInstanceKey.userData);
-            if (riderData && typeof riderData === 'object') {
-                if ('name' in riderData) setRiderName(riderData.name || 'Rider');
-                if ('email' in riderData) setUsername(riderData.email || '');
-                if ('phone' in riderData) setPhone(riderData.phone || '');
-                if ('vehicle_number' in riderData) setVehicleNumber(riderData.vehicle_number || '');
-            }
+            const riderData = await StorageManager.getItem<DeliveryPersonModel>(StorageKey.USER);
+            const extractedData = extractRiderData(riderData);
+
+            setRiderName(extractedData.name);
+            setUsername(extractedData.email);
+            setPhone(extractedData.phone);
+            setVehicleNumber(extractedData.vehicleNumber);
         } catch (error) {
             console.error('Error loading rider data:', error);
         }
-    };
+    }, []);
 
-    const handleLogout = () => {
-        Alert.alert('Logout', 'Are you sure you want to logout?', [
-            { text: 'Cancel', style: 'cancel' },
-            {
-                text: 'Logout',
-                style: 'destructive',
-                onPress: performLogout,
-            },
-        ]);
-    };
-
-    const performLogout = async () => {
+    const performLogout = useCallback(async () => {
         setLoading(true);
         try {
-            const token = await StorageManager.getItem(constant.shareInstanceKey.authToken);
+            const token = await StorageManager.getItem(StorageKey.TOKEN);
+
             if (token) {
                 try {
                     await ApiManager.post({
                         endpoint: constant.apiEndPoints.riderLogout,
-                        token: token,
+                        token,
                     });
                 } catch (apiError) {
                     console.log('Logout API error (continuing anyway):', apiError);
                 }
             }
+
             await logout();
         } catch (error) {
             console.error('Logout error:', error);
-            Alert.alert('Error', 'Failed to logout. Please try again.');
+            Alert.alert('Error', ALERT_MESSAGES.LOGOUT_ERROR);
             setLoading(false);
         }
-    };
+    }, [logout]);
 
-    const menuSections = [
+    // ========================================================================
+    // EFFECTS
+    // ========================================================================
+
+    useEffect(() => {
+        loadRiderData();
+    }, [loadRiderData]);
+
+    // ========================================================================
+    // HANDLERS
+    // ========================================================================
+
+    const handleLogout = useCallback(() => {
+        Alert.alert(
+            ALERT_MESSAGES.LOGOUT_TITLE,
+            ALERT_MESSAGES.LOGOUT_MESSAGE,
+            [
+                { text: ALERT_MESSAGES.CANCEL, style: 'cancel' },
+                {
+                    text: ALERT_MESSAGES.LOGOUT,
+                    style: 'destructive',
+                    onPress: performLogout,
+                },
+            ]
+        );
+    }, [performLogout]);
+
+    const handleMenuItemPress = useCallback((route: string) => {
+        // Future: Implement navigation for other routes
+        if (__DEV__) {
+            console.log('Navigate to:', route);
+        }
+    }, []);
+
+    // ========================================================================
+    // COMPUTED VALUES
+    // ========================================================================
+
+    const profileDetails: ProfileDetail[] = useMemo(() => [
         {
-            title: 'Account',
-            items: [
-                { id: 1, label: 'Edit Profile', icon: '✏️', route: 'EditProfile' },
-                { id: 2, label: 'Change Password', icon: '🔒', route: 'ChangePassword' },
-            ],
+            icon: ICONS.PHONE,
+            label: 'Phone Number',
+            value: phone || DEFAULT_VALUES.NOT_PROVIDED,
         },
         {
-            title: 'Delivery',
-            items: [
-                { id: 3, label: 'Earnings Report', icon: '💰', route: 'Earnings' },
-                { id: 4, label: 'Delivery Stats', icon: '📊', route: 'Stats' },
-            ],
+            icon: ICONS.VEHICLE,
+            label: 'Vehicle Number',
+            value: vehicleNumber || DEFAULT_VALUES.NOT_PROVIDED,
         },
-        {
-            title: 'Support',
-            items: [
-                { id: 5, label: 'Help & Support', icon: '❓', route: 'Support' },
-                { id: 6, label: 'About', icon: 'ℹ️', route: 'About' },
-            ],
-        },
-    ];
+    ], [phone, vehicleNumber]);
+
+    const avatarLetter = useMemo(() => getAvatarLetter(riderName), [riderName]);
+    const versionString = useMemo(() => getVersionString(), []);
+    const logoutButtonColor = loading ? colors.buttonDisabled : LOGOUT_BUTTON_COLOR;
+    const logoutButtonText = loading ? 'Logging out...' : `${ICONS.LOGOUT} Logout`;
+
+    // ========================================================================
+    // RENDER HELPERS
+    // ========================================================================
+
+    const renderHeader = () => (
+        <View style={[styles.header, { backgroundColor: colors.themePrimary }]}>
+            <View style={styles.profileSection}>
+                <View style={[styles.avatar, { backgroundColor: colors.white }]}>
+                    <Text style={[styles.avatarText, { color: colors.themePrimary }]}>
+                        {avatarLetter}
+                    </Text>
+                </View>
+                <View style={styles.profileInfo}>
+                    <Text style={[styles.riderName, { color: colors.white }]}>
+                        {riderName}
+                    </Text>
+                    <Text style={[styles.username, { color: colors.white }]}>
+                        {username}
+                    </Text>
+                </View>
+            </View>
+        </View>
+    );
+
+    const renderProfileDetail = (detail: ProfileDetail, isLast: boolean) => (
+        <React.Fragment key={detail.label}>
+            <View style={styles.detailItem}>
+                <Text style={styles.detailIcon}>{detail.icon}</Text>
+                <View style={styles.detailText}>
+                    <Text style={[styles.detailLabel, { color: colors.textLabel }]}>
+                        {detail.label}
+                    </Text>
+                    <Text style={[styles.detailValue, { color: colors.textPrimary }]}>
+                        {detail.value}
+                    </Text>
+                </View>
+            </View>
+            {!isLast && <View style={[styles.divider, { backgroundColor: colors.border }]} />}
+        </React.Fragment>
+    );
+
+    const renderDetailsCard = () => (
+        <View style={styles.detailsCardContainer}>
+            <View style={[styles.detailsCard, { backgroundColor: colors.backgroundSecondary }]}>
+                {profileDetails.map((detail, index) =>
+                    renderProfileDetail(detail, index === profileDetails.length - 1)
+                )}
+            </View>
+        </View>
+    );
+
+    const renderMenuItem = (item: MenuItem, isLast: boolean) => (
+        <View key={item.id}>
+            <AppTouchableRipple
+                style={styles.menuItem}
+                onPress={() => handleMenuItemPress(item.route)}
+            >
+                <View style={styles.menuItemLeft}>
+                    <Text style={styles.menuIcon}>{item.icon}</Text>
+                    <Text style={[styles.menuLabel, { color: colors.textPrimary }]}>
+                        {item.label}
+                    </Text>
+                </View>
+                <Text style={styles.menuArrow}>{ICONS.ARROW}</Text>
+            </AppTouchableRipple>
+            {!isLast && (
+                <View style={[styles.menuDivider, { backgroundColor: colors.border }]} />
+            )}
+        </View>
+    );
+
+    const renderMenuSection = (section: MenuSection, index: number) => (
+        <View key={index} style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.textLabel }]}>
+                {section.title}
+            </Text>
+            <View style={[styles.sectionCard, { backgroundColor: colors.backgroundSecondary }]}>
+                {section.items.map((item, itemIndex) =>
+                    renderMenuItem(item, itemIndex === section.items.length - 1)
+                )}
+            </View>
+        </View>
+    );
+
+    const renderLogoutButton = () => (
+        <AppTouchableRipple
+            style={[styles.logoutButton, { backgroundColor: logoutButtonColor }]}
+            onPress={handleLogout}
+            disabled={loading}
+        >
+            <Text style={[styles.logoutText, { color: colors.white }]}>
+                {logoutButtonText}
+            </Text>
+        </AppTouchableRipple>
+    );
+
+    const renderVersionInfo = () => (
+        <Text style={[styles.versionText, { color: colors.textLabel }]}>
+            {versionString}
+        </Text>
+    );
+
+    // ========================================================================
+    // MAIN RENDER
+    // ========================================================================
 
     return (
         <MainContainer
@@ -106,130 +371,17 @@ const RiderProfileScreen: React.FC<Props> = ({ navigation }) => {
             showLoader={loading}
         >
             <View style={[styles.container, { backgroundColor: colors.backgroundPrimary }]}>
-                {/* Header */}
-                <View style={[styles.header, { backgroundColor: colors.themePrimary }]}>
-                    <View style={styles.profileSection}>
-                        <View style={[styles.avatar, { backgroundColor: colors.white }]}>
-                            <Text style={[styles.avatarText, { color: colors.themePrimary }]}>
-                                {riderName.charAt(0).toUpperCase()}
-                            </Text>
-                        </View>
-                        <View style={styles.profileInfo}>
-                            <Text style={[styles.riderName, { color: colors.white }]}>
-                                {riderName}
-                            </Text>
-                            <Text style={[styles.username, { color: colors.white }]}>
-                                {username}
-                            </Text>
-                        </View>
-                    </View>
-                </View>
+                {renderHeader()}
+                {renderDetailsCard()}
 
-                {/* Profile Details Card */}
-                <View style={styles.detailsCardContainer}>
-                    <View style={[styles.detailsCard, { backgroundColor: colors.backgroundSecondary }]}>
-                        <View style={styles.detailItem}>
-                            <Text style={styles.detailIcon}>📞</Text>
-                            <View style={styles.detailText}>
-                                <Text style={[styles.detailLabel, { color: colors.textLabel }]}>
-                                    Phone Number
-                                </Text>
-                                <Text style={[styles.detailValue, { color: colors.textPrimary }]}>
-                                    {phone || 'Not provided'}
-                                </Text>
-                            </View>
-                        </View>
-
-                        <View style={[styles.divider, { backgroundColor: colors.border }]} />
-
-                        <View style={styles.detailItem}>
-                            <Text style={styles.detailIcon}>🏍️</Text>
-                            <View style={styles.detailText}>
-                                <Text style={[styles.detailLabel, { color: colors.textLabel }]}>
-                                    Vehicle Number
-                                </Text>
-                                <Text style={[styles.detailValue, { color: colors.textPrimary }]}>
-                                    {vehicleNumber || 'Not provided'}
-                                </Text>
-                            </View>
-                        </View>
-                    </View>
-                </View>
-
-                {/* Menu Items */}
                 <ScrollView
                     style={styles.content}
                     contentContainerStyle={styles.contentContainer}
                     showsVerticalScrollIndicator={false}
                 >
-                    {menuSections.map((section, sectionIndex) => (
-                        <View key={sectionIndex} style={styles.section}>
-                            <Text style={[styles.sectionTitle, { color: colors.textLabel }]}>
-                                {section.title}
-                            </Text>
-
-                            <View
-                                style={[
-                                    styles.sectionCard,
-                                    { backgroundColor: colors.backgroundSecondary },
-                                ]}
-                            >
-                                {section.items.map((item, index) => (
-                                    <View key={item.id}>
-                                        <AppTouchableRipple
-                                            style={styles.menuItem}
-                                            onPress={() => {
-                                                // Future: Implement navigation for other routes
-                                                if (__DEV__) {
-                                                    console.log('Navigate to:', item.route);
-                                                }
-                                            }}
-                                        >
-                                            <View style={styles.menuItemLeft}>
-                                                <Text style={styles.menuIcon}>{item.icon}</Text>
-                                                <Text
-                                                    style={[
-                                                        styles.menuLabel,
-                                                        { color: colors.textPrimary },
-                                                    ]}
-                                                >
-                                                    {item.label}
-                                                </Text>
-                                            </View>
-                                            <Text style={styles.menuArrow}>›</Text>
-                                        </AppTouchableRipple>
-
-                                        {index < section.items.length - 1 && (
-                                            <View
-                                                style={[styles.menuDivider, { backgroundColor: colors.border }]}
-                                            />
-                                        )}
-                                    </View>
-                                ))}
-                            </View>
-                        </View>
-                    ))}
-
-                    {/* Logout Button */}
-                    <AppTouchableRipple
-                        style={[
-                            styles.logoutButton,
-                            {
-                                backgroundColor: loading ? colors.buttonDisabled : '#ff4444',
-                            },
-                        ]}
-                        onPress={handleLogout}
-                        disabled={loading}
-                    >
-                        <Text style={[styles.logoutText, { color: colors.white }]}>
-                            {loading ? 'Logging out...' : '🚪 Logout'}
-                        </Text>
-                    </AppTouchableRipple>
-
-                    {/* Version Info */}
-                    <Text style={[styles.versionText, { color: colors.textLabel }]}>
-                        GOF Rider v1.0.0
-                    </Text>
+                    {MENU_SECTIONS.map(renderMenuSection)}
+                    {renderLogoutButton()}
+                    {renderVersionInfo()}
                 </ScrollView>
             </View>
         </MainContainer>
@@ -237,6 +389,10 @@ const RiderProfileScreen: React.FC<Props> = ({ navigation }) => {
 };
 
 export default RiderProfileScreen;
+
+// ============================================================================
+// STYLES
+// ============================================================================
 
 const styles = StyleSheet.create({
     container: {

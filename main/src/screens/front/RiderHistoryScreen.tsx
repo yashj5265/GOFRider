@@ -1,10 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import MainContainer from '../../container/MainContainer';
 import { useTheme } from '../../contexts/ThemeProvider';
 import fonts from '../../styles/fonts';
 import AppTouchableRipple from '../../components/AppTouchableRipple';
+
+// ============================================================================
+// TYPES
+// ============================================================================
 
 interface Props {
     navigation: NativeStackNavigationProp<any>;
@@ -20,27 +24,283 @@ interface CompletedOrder {
     earnings: number;
 }
 
+type FilterType = 'today' | 'week' | 'month';
+
+interface FilterOption {
+    key: FilterType;
+    label: string;
+}
+
+interface SummaryCard {
+    icon: string;
+    value: string | number;
+    label: string;
+}
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+const FILTER_OPTIONS: FilterOption[] = [
+    { key: 'today', label: 'Today' },
+    { key: 'week', label: 'This Week' },
+    { key: 'month', label: 'This Month' },
+];
+
+const SUMMARY_ICONS = {
+    DELIVERIES: '📦',
+    EARNINGS: '💰',
+    COLLECTED: '💵',
+} as const;
+
+const BADGE_COLORS = {
+    COMPLETED: '#4caf50',
+} as const;
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Calculates total earnings from orders
+ */
+const calculateTotalEarnings = (orders: CompletedOrder[]): number => {
+    return orders.reduce((sum, order) => sum + order.earnings, 0);
+};
+
+/**
+ * Calculates total amount collected from orders
+ */
+const calculateTotalCollected = (orders: CompletedOrder[]): number => {
+    return orders.reduce((sum, order) => sum + order.amount, 0);
+};
+
+/**
+ * Formats currency with rupee symbol
+ */
+const formatCurrency = (amount: number): string => {
+    return `₹${amount}`;
+};
+
+// ============================================================================
+// COMPONENT
+// ============================================================================
+
 const RiderHistoryScreen: React.FC<Props> = ({ navigation }) => {
     const colors = useTheme();
-    const [selectedFilter, setSelectedFilter] = useState<'today' | 'week' | 'month'>('today');
+
+    // ========================================================================
+    // STATE
+    // ========================================================================
+
+    const [selectedFilter, setSelectedFilter] = useState<FilterType>('today');
     const [completedOrders, setCompletedOrders] = useState<CompletedOrder[]>([]);
     const [loading, setLoading] = useState<boolean>(true);
 
-    // Note: History API endpoint will be implemented in future update
-    // For now, showing empty state
+    // ========================================================================
+    // EFFECTS
+    // ========================================================================
+
     useEffect(() => {
-        // Future: Fetch completed orders from API based on selectedFilter
-        setLoading(false);
+        // Note: History API endpoint will be implemented in future update
+        // For now, showing empty state
+        const fetchCompletedOrders = async () => {
+            // Future: Fetch completed orders from API based on selectedFilter
+            setLoading(false);
+        };
+
+        fetchCompletedOrders();
     }, [selectedFilter]);
 
-    const getFilteredOrders = () => {
+    // ========================================================================
+    // COMPUTED VALUES
+    // ========================================================================
+
+    const filteredOrders = useMemo(() => {
         // Future: Filter based on selected filter when API is ready
         return completedOrders;
+    }, [completedOrders, selectedFilter]);
+
+    const totalEarnings = useMemo(() => {
+        return calculateTotalEarnings(completedOrders);
+    }, [completedOrders]);
+
+    const totalDeliveries = useMemo(() => {
+        return completedOrders.length;
+    }, [completedOrders]);
+
+    const totalCollected = useMemo(() => {
+        return calculateTotalCollected(completedOrders);
+    }, [completedOrders]);
+
+    const summaryCards: SummaryCard[] = useMemo(() => [
+        {
+            icon: SUMMARY_ICONS.DELIVERIES,
+            value: totalDeliveries,
+            label: 'Deliveries',
+        },
+        {
+            icon: SUMMARY_ICONS.EARNINGS,
+            value: formatCurrency(totalEarnings),
+            label: 'Earnings',
+        },
+        {
+            icon: SUMMARY_ICONS.COLLECTED,
+            value: formatCurrency(totalCollected),
+            label: 'Collected',
+        },
+    ], [totalDeliveries, totalEarnings, totalCollected]);
+
+    // ========================================================================
+    // HANDLERS
+    // ========================================================================
+
+    const handleFilterChange = useCallback((filter: FilterType) => {
+        setSelectedFilter(filter);
+    }, []);
+
+    const handleOrderPress = useCallback((order: CompletedOrder) => {
+        // Future: Navigate to order details
+        console.log('Order pressed:', order.id);
+    }, []);
+
+    // ========================================================================
+    // RENDER HELPERS
+    // ========================================================================
+
+    const renderFilterTabs = () => (
+        <View style={[styles.filterContainer, { backgroundColor: colors.backgroundSecondary }]}>
+            {FILTER_OPTIONS.map((filter) => (
+                <TouchableOpacity
+                    key={filter.key}
+                    style={[
+                        styles.filterTab,
+                        selectedFilter === filter.key && {
+                            backgroundColor: colors.themePrimary,
+                        },
+                    ]}
+                    onPress={() => handleFilterChange(filter.key)}
+                >
+                    <Text
+                        style={[
+                            styles.filterText,
+                            {
+                                color: selectedFilter === filter.key
+                                    ? colors.white
+                                    : colors.textLabel,
+                            },
+                        ]}
+                    >
+                        {filter.label}
+                    </Text>
+                </TouchableOpacity>
+            ))}
+        </View>
+    );
+
+    const renderSummaryCard = (card: SummaryCard, index: number) => (
+        <View
+            key={index}
+            style={[styles.summaryCard, { backgroundColor: colors.backgroundSecondary }]}
+        >
+            <Text style={styles.summaryIcon}>{card.icon}</Text>
+            <Text style={[styles.summaryValue, { color: colors.themePrimary }]}>
+                {card.value}
+            </Text>
+            <Text style={[styles.summaryLabel, { color: colors.textDescription }]}>
+                {card.label}
+            </Text>
+        </View>
+    );
+
+    const renderSummaryCards = () => (
+        <View style={styles.summaryContainer}>
+            {summaryCards.map(renderSummaryCard)}
+        </View>
+    );
+
+    const renderEmptyState = () => (
+        <View style={styles.emptyContainer}>
+            <Text style={styles.emptyIcon}>
+                {loading ? '⏳' : '📦'}
+            </Text>
+            <Text style={[styles.emptyText, { color: colors.textPrimary }]}>
+                {loading ? 'Loading history...' : 'No delivery history'}
+            </Text>
+            {!loading && (
+                <Text style={[styles.emptySubtext, { color: colors.textDescription }]}>
+                    Your completed deliveries will appear here
+                </Text>
+            )}
+        </View>
+    );
+
+    const renderOrderCard = (order: CompletedOrder) => (
+        <AppTouchableRipple
+            key={order.id}
+            style={[styles.historyCard, { backgroundColor: colors.backgroundSecondary }]}
+            onPress={() => handleOrderPress(order)}
+        >
+            {/* Card Header */}
+            <View style={styles.cardHeader}>
+                <View>
+                    <Text style={[styles.orderNumber, { color: colors.themePrimary }]}>
+                        #{order.orderNumber}
+                    </Text>
+                    <Text style={[styles.customerName, { color: colors.textPrimary }]}>
+                        {order.customerName}
+                    </Text>
+                </View>
+                <View style={[styles.completedBadge, { backgroundColor: BADGE_COLORS.COMPLETED }]}>
+                    <Text style={[styles.badgeText, { color: colors.white }]}>
+                        ✓ Delivered
+                    </Text>
+                </View>
+            </View>
+
+            {/* Card Details */}
+            <View style={styles.cardDetails}>
+                <View style={styles.detailRow}>
+                    <Text style={[styles.detailLabel, { color: colors.textLabel }]}>
+                        🕐 Time:
+                    </Text>
+                    <Text style={[styles.detailValue, { color: colors.textPrimary }]}>
+                        {order.date}, {order.deliveredAt}
+                    </Text>
+                </View>
+
+                <View style={styles.detailRow}>
+                    <Text style={[styles.detailLabel, { color: colors.textLabel }]}>
+                        💵 Amount:
+                    </Text>
+                    <Text style={[styles.detailValue, { color: colors.textPrimary }]}>
+                        {formatCurrency(order.amount)}
+                    </Text>
+                </View>
+
+                <View style={styles.detailRow}>
+                    <Text style={[styles.detailLabel, { color: colors.textLabel }]}>
+                        💰 Earnings:
+                    </Text>
+                    <Text style={[styles.earningsText, { color: BADGE_COLORS.COMPLETED }]}>
+                        +{formatCurrency(order.earnings)}
+                    </Text>
+                </View>
+            </View>
+        </AppTouchableRipple>
+    );
+
+    const renderHistoryList = () => {
+        if (loading || filteredOrders.length === 0) {
+            return renderEmptyState();
+        }
+
+        return filteredOrders.map(renderOrderCard);
     };
 
-    const totalEarnings = completedOrders.reduce((sum, order) => sum + order.earnings, 0);
-    const totalDeliveries = completedOrders.length;
-    const totalCollected = completedOrders.reduce((sum, order) => sum + order.amount, 0);
+    // ========================================================================
+    // MAIN RENDER
+    // ========================================================================
 
     return (
         <MainContainer
@@ -60,66 +320,10 @@ const RiderHistoryScreen: React.FC<Props> = ({ navigation }) => {
                 </View>
 
                 {/* Filter Tabs */}
-                <View style={[styles.filterContainer, { backgroundColor: colors.backgroundSecondary }]}>
-                    {(['today', 'week', 'month'] as const).map((filter) => (
-                        <TouchableOpacity
-                            key={filter}
-                            style={[
-                                styles.filterTab,
-                                selectedFilter === filter && {
-                                    backgroundColor: colors.themePrimary,
-                                },
-                            ]}
-                            onPress={() => setSelectedFilter(filter)}
-                        >
-                            <Text
-                                style={[
-                                    styles.filterText,
-                                    {
-                                        color: selectedFilter === filter
-                                            ? colors.white
-                                            : colors.textLabel,
-                                    },
-                                ]}
-                            >
-                                {filter === 'today' ? 'Today' : filter === 'week' ? 'This Week' : 'This Month'}
-                            </Text>
-                        </TouchableOpacity>
-                    ))}
-                </View>
+                {renderFilterTabs()}
 
                 {/* Summary Cards */}
-                <View style={styles.summaryContainer}>
-                    <View style={[styles.summaryCard, { backgroundColor: colors.backgroundSecondary }]}>
-                        <Text style={styles.summaryIcon}>📦</Text>
-                        <Text style={[styles.summaryValue, { color: colors.themePrimary }]}>
-                            {totalDeliveries}
-                        </Text>
-                        <Text style={[styles.summaryLabel, { color: colors.textDescription }]}>
-                            Deliveries
-                        </Text>
-                    </View>
-
-                    <View style={[styles.summaryCard, { backgroundColor: colors.backgroundSecondary }]}>
-                        <Text style={styles.summaryIcon}>💰</Text>
-                        <Text style={[styles.summaryValue, { color: colors.themePrimary }]}>
-                            ₹{totalEarnings}
-                        </Text>
-                        <Text style={[styles.summaryLabel, { color: colors.textDescription }]}>
-                            Earnings
-                        </Text>
-                    </View>
-
-                    <View style={[styles.summaryCard, { backgroundColor: colors.backgroundSecondary }]}>
-                        <Text style={styles.summaryIcon}>💵</Text>
-                        <Text style={[styles.summaryValue, { color: colors.themePrimary }]}>
-                            ₹{totalCollected}
-                        </Text>
-                        <Text style={[styles.summaryLabel, { color: colors.textDescription }]}>
-                            Collected
-                        </Text>
-                    </View>
-                </View>
+                {renderSummaryCards()}
 
                 {/* History List */}
                 <ScrollView
@@ -127,79 +331,7 @@ const RiderHistoryScreen: React.FC<Props> = ({ navigation }) => {
                     contentContainerStyle={styles.contentContainer}
                     showsVerticalScrollIndicator={false}
                 >
-                    {loading ? (
-                        <View style={styles.emptyContainer}>
-                            <Text style={styles.emptyIcon}>⏳</Text>
-                            <Text style={[styles.emptyText, { color: colors.textPrimary }]}>
-                                Loading history...
-                            </Text>
-                        </View>
-                    ) : completedOrders.length === 0 ? (
-                        <View style={styles.emptyContainer}>
-                            <Text style={styles.emptyIcon}>📦</Text>
-                            <Text style={[styles.emptyText, { color: colors.textPrimary }]}>
-                                No delivery history
-                            </Text>
-                            <Text style={[styles.emptySubtext, { color: colors.textDescription }]}>
-                                Your completed deliveries will appear here
-                            </Text>
-                        </View>
-                    ) : (
-                        getFilteredOrders().map((order) => (
-                        <AppTouchableRipple
-                            key={order.id}
-                            style={[styles.historyCard, { backgroundColor: colors.backgroundSecondary }]}
-                            onPress={() => {
-                                // Future: Navigate to order details
-                            }}
-                        >
-                            <View style={styles.cardHeader}>
-                                <View>
-                                    <Text style={[styles.orderNumber, { color: colors.themePrimary }]}>
-                                        #{order.orderNumber}
-                                    </Text>
-                                    <Text style={[styles.customerName, { color: colors.textPrimary }]}>
-                                        {order.customerName}
-                                    </Text>
-                                </View>
-                                <View style={[styles.completedBadge, { backgroundColor: '#4caf50' }]}>
-                                    <Text style={[styles.badgeText, { color: colors.white }]}>
-                                        ✓ Delivered
-                                    </Text>
-                                </View>
-                            </View>
-
-                            <View style={styles.cardDetails}>
-                                <View style={styles.detailRow}>
-                                    <Text style={[styles.detailLabel, { color: colors.textLabel }]}>
-                                        🕐 Time:
-                                    </Text>
-                                    <Text style={[styles.detailValue, { color: colors.textPrimary }]}>
-                                        {order.date}, {order.deliveredAt}
-                                    </Text>
-                                </View>
-
-                                <View style={styles.detailRow}>
-                                    <Text style={[styles.detailLabel, { color: colors.textLabel }]}>
-                                        💵 Amount:
-                                    </Text>
-                                    <Text style={[styles.detailValue, { color: colors.textPrimary }]}>
-                                        ₹{order.amount}
-                                    </Text>
-                                </View>
-
-                                <View style={styles.detailRow}>
-                                    <Text style={[styles.detailLabel, { color: colors.textLabel }]}>
-                                        💰 Earnings:
-                                    </Text>
-                                    <Text style={[styles.earningsText, { color: '#4caf50' }]}>
-                                        +₹{order.earnings}
-                                    </Text>
-                                </View>
-                            </View>
-                        </AppTouchableRipple>
-                    ))
-                    )}
+                    {renderHistoryList()}
                 </ScrollView>
             </View>
         </MainContainer>
@@ -207,6 +339,10 @@ const RiderHistoryScreen: React.FC<Props> = ({ navigation }) => {
 };
 
 export default RiderHistoryScreen;
+
+// ============================================================================
+// STYLES
+// ============================================================================
 
 const styles = StyleSheet.create({
     container: {

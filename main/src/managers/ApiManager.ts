@@ -118,12 +118,12 @@ export default class ApiManager {
     }
 
     // 👉 Shortcut methods
-    static get<T = any>({ endpoint, token }: { endpoint: string, token?: string }) {
-        return this.request<T>({ endpoint, method: "GET", token });
+    static get<T = any>({ endpoint, token, showError, showSuccess }: { endpoint: string, token?: string, showError?: boolean, showSuccess?: boolean }) {
+        return this.request<T>({ endpoint, method: "GET", token, showError, showSuccess });
     }
 
-    static post<T = any>({ endpoint, params, token }: { endpoint: string, params?: any, token?: string }) {
-        return this.request<T>({ endpoint, method: "POST", params, token });
+    static post<T = any>({ endpoint, params, token, showError, showSuccess }: { endpoint: string, params?: any, token?: string, showError?: boolean, showSuccess?: boolean }) {
+        return this.request<T>({ endpoint, method: "POST", params, token, showError, showSuccess });
     }
 
     static put<T = any>({ endpoint, params, token }: { endpoint: string, params?: any, token?: string }) {

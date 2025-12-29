@@ -1,57 +1,156 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, Alert, RefreshControl, Linking, Modal, TextInput, Platform, KeyboardAvoidingView } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import MainContainer from '../../container/MainContainer';
 import { useTheme } from '../../contexts/ThemeProvider';
 import fonts from '../../styles/fonts';
 import AppTouchableRipple from '../../components/AppTouchableRipple';
 import ApiManager from '../../managers/ApiManager';
-import StorageManager from '../../managers/StorageManager';
+import StorageManager, { StorageKey } from '../../managers/StorageManager';
 import constant from '../../utilities/constant';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { RiderOrderAssignmentModel } from '../../dataModels/models';
+
+// ============================================================================
+// TYPES
+// ============================================================================
 
 interface Props {
     navigation: NativeStackNavigationProp<any>;
 }
 
-// Order interface matching API response
-interface Order {
-    id: number;
-    order_number?: string;
-    order_id?: number;
-    customer_name?: string;
-    customer_phone?: string;
-    address?: string;
-    full_address?: string;
-    items_count?: number;
-    total_amount?: number;
-    amount?: number;
-    payment_mode?: string;
-    status: string;
-    created_at?: string;
-    assigned_at?: string;
-    delivery_person_id?: number;
+interface StatusInfo {
+    label: string;
+    color: string;
+    action: string;
+    nextStatus: string | null;
 }
+
+interface TextSelection {
+    start: number;
+    end: number;
+}
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+const OTP_LENGTH = 4;
+const OTP_INPUT_FOCUS_DELAY = 300;
+
+const STATUS_MAP: Record<string, StatusInfo> = {
+    assigned: { label: 'Assigned', color: '#ff9800', action: 'Mark as Picked', nextStatus: 'picked' },
+    pending: { label: 'Assigned', color: '#ff9800', action: 'Mark as Picked', nextStatus: 'picked' },
+    picked: { label: 'Picked Up', color: '#2196f3', action: 'Start Delivery', nextStatus: 'delivering' },
+    picked_up: { label: 'Picked Up', color: '#2196f3', action: 'Start Delivery', nextStatus: 'delivering' },
+    delivering: { label: 'Delivering', color: '#9c27b0', action: 'Complete Delivery', nextStatus: 'delivered' },
+    out_for_delivery: { label: 'Delivering', color: '#9c27b0', action: 'Complete Delivery', nextStatus: 'delivered' },
+    delivered: { label: 'Delivered', color: '#4caf50', action: 'Completed', nextStatus: null },
+};
+
+const CANCELLABLE_STATUSES = ['delivering'] as const;
+const NON_CANCELLABLE_STATUSES = ['delivered', 'cancelled'] as const;
+
+const ALERT_MESSAGES = {
+    ORDER_COMPLETED: 'This order is already completed.',
+    ORDER_NOT_CANCELLABLE: 'This order cannot be cancelled.',
+    PHONE_NOT_AVAILABLE: 'Phone number not available',
+    PHONE_NOT_SUPPORTED: 'Phone calls are not supported on this device',
+    PHONE_DIALER_FAILED: 'Failed to open phone dialer',
+    OTP_VALIDATION: `Please enter a ${OTP_LENGTH}-digit OTP code`,
+    STATUS_UPDATE_SUCCESS: (status: string) => `Order status updated to ${status}`,
+    STATUS_UPDATE_FAILED: 'Failed to update order status',
+    OTP_VERIFICATION_SUCCESS: 'Delivery completed successfully!',
+    OTP_VERIFICATION_FAILED: 'Invalid OTP. Please try again.',
+} as const;
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+const getStatusInfo = (status: string, fallbackColor: string): StatusInfo => {
+    const statusKey = status?.toLowerCase() || '';
+    return STATUS_MAP[statusKey] || {
+        label: status || 'Unknown',
+        color: fallbackColor,
+        action: 'View',
+        nextStatus: null,
+    };
+};
+
+const formatOrderNumber = (order: RiderOrderAssignmentModel): string => {
+    return order.order.order_code || `ORD${order.order.id}`;
+};
+
+const formatAddress = (order: RiderOrderAssignmentModel): string => {
+    const addr = order.order.address;
+    if (!addr) return 'Address not available';
+
+    const parts = [addr.address, addr.city, addr.state, addr.pincode].filter(Boolean);
+    return parts.length > 0 ? parts.join(', ') : 'Address not available';
+};
+
+const formatAmount = (order: RiderOrderAssignmentModel): number => {
+    return parseFloat(order.order.total_amount) || 0;
+};
+
+const formatItemsCount = (order: RiderOrderAssignmentModel): number => {
+    return order.order.items?.length || 0;
+};
+
+const sanitizePhoneNumber = (phone: string): string => {
+    return phone.replace(/[^0-9]/g, '');
+};
+
+const getOrderStatus = (order: RiderOrderAssignmentModel): string => {
+    return order.order?.status || order.status;
+};
+
+const getCustomerInfo = (order: RiderOrderAssignmentModel) => {
+    return {
+        name: order.order.address?.full_name || 'Customer',
+        phone: order.order.address?.phone || '',
+    };
+};
+
+const canCancelOrder = (orderStatus: string): boolean => {
+    const statusLower = orderStatus?.toLowerCase() || '';
+    return !NON_CANCELLABLE_STATUSES.includes(statusLower as any);
+};
+
+const shouldShowCancelButton = (statusLabel: string): boolean => {
+    return CANCELLABLE_STATUSES.some(status =>
+        STATUS_MAP[status]?.label === statusLabel
+    );
+};
+
+// ============================================================================
+// COMPONENT
+// ============================================================================
 
 const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
     const colors = useTheme();
-    const [orders, setOrders] = useState<Order[]>([]);
+    const otpInputRef = useRef<TextInput>(null);
+
+    // ========================================================================
+    // STATE
+    // ========================================================================
+
+    const [orders, setOrders] = useState<RiderOrderAssignmentModel[]>([]);
     const [loading, setLoading] = useState<boolean>(true);
     const [refreshing, setRefreshing] = useState<boolean>(false);
     const [updatingOrderId, setUpdatingOrderId] = useState<number | null>(null);
     const [showConfirmationModal, setShowConfirmationModal] = useState<boolean>(false);
     const [confirmationCode, setConfirmationCode] = useState<string>('');
-    const [currentOrder, setCurrentOrder] = useState<Order | null>(null);
+    const [currentOrder, setCurrentOrder] = useState<RiderOrderAssignmentModel | null>(null);
+    const [otpSelection, setOtpSelection] = useState<TextSelection>({ start: 0, end: 0 });
 
-    // Load orders when screen is focused
-    useFocusEffect(
-        useCallback(() => {
-            fetchOrders();
-        }, [])
-    );
+    // ========================================================================
+    // API CALLS
+    // ========================================================================
 
-    const fetchOrders = async (isRefresh = false) => {
+    const fetchOrders = useCallback(async (isRefresh = false) => {
         if (isRefresh) {
             setRefreshing(true);
         } else {
@@ -59,9 +158,9 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
         }
 
         try {
-            const token = await StorageManager.getItem(constant.shareInstanceKey.authToken);
-            
-            const response = await ApiManager.get({
+            const token = await StorageManager.getItem(StorageKey.TOKEN);
+
+            const response = await ApiManager.get<RiderOrderAssignmentModel[]>({
                 endpoint: constant.apiEndPoints.getOrders,
                 token: token || undefined,
                 showError: true,
@@ -71,16 +170,7 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
                 console.log('✅ Orders Response:', response);
             }
 
-            // Handle different response structures
-            let ordersData: Order[] = [];
-            if (response?.data && Array.isArray(response.data)) {
-                ordersData = response.data;
-            } else if (response?.orders && Array.isArray(response.orders)) {
-                ordersData = response.orders;
-            } else if (Array.isArray(response)) {
-                ordersData = response;
-            }
-
+            const ordersData: RiderOrderAssignmentModel[] = (response?.data as RiderOrderAssignmentModel[]) || [];
             setOrders(ordersData);
         } catch (error: any) {
             console.error('❌ Fetch Orders Error:', error);
@@ -89,42 +179,19 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
             setLoading(false);
             setRefreshing(false);
         }
-    };
+    }, []);
 
-    const onRefresh = () => {
-        fetchOrders(true);
-    };
-
-    const getStatusInfo = (status: string) => {
-        const statusLower = status?.toLowerCase() || '';
-        switch (statusLower) {
-            case 'assigned':
-            case 'pending':
-                return { label: 'Assigned', color: '#ff9800', action: 'Mark as Picked', nextStatus: 'picked' };
-            case 'picked':
-            case 'picked_up':
-                return { label: 'Picked Up', color: '#2196f3', action: 'Start Delivery', nextStatus: 'delivering' };
-            case 'delivering':
-            case 'out_for_delivery':
-                return { label: 'Delivering', color: '#9c27b0', action: 'Complete Delivery', nextStatus: 'delivered' };
-            case 'delivered':
-                return { label: 'Delivered', color: '#4caf50', action: 'Completed', nextStatus: null };
-            default:
-                return { label: status || 'Unknown', color: colors.textLabel, action: 'View', nextStatus: null };
-        }
-    };
-
-    const updateOrderStatus = async (order: Order, newStatus: string) => {
+    const updateOrderStatus = useCallback(async (order: RiderOrderAssignmentModel, newStatus: string) => {
         if (updatingOrderId === order.id) return;
 
         setUpdatingOrderId(order.id);
         try {
-            const token = await StorageManager.getItem(constant.shareInstanceKey.authToken);
+            const token = await StorageManager.getItem(StorageKey.TOKEN);
 
             const response = await ApiManager.post({
                 endpoint: constant.apiEndPoints.updateStatus,
                 params: {
-                    order_id: order.id,
+                    order_id: order.order_id,
                     status: newStatus,
                 },
                 token: token || undefined,
@@ -136,33 +203,108 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
                 console.log('✅ Status Update Response:', response);
             }
 
-            Alert.alert('Success', `Order status updated to ${newStatus}`);
-            // Refresh orders list
+            Alert.alert('Success', ALERT_MESSAGES.STATUS_UPDATE_SUCCESS(newStatus));
             await fetchOrders(true);
         } catch (error: any) {
             console.error('❌ Update Status Error:', error);
-            Alert.alert('Error', error.message || 'Failed to update order status');
+            Alert.alert('Error', error.message || ALERT_MESSAGES.STATUS_UPDATE_FAILED);
         } finally {
             setUpdatingOrderId(null);
         }
-    };
+    }, [updatingOrderId, fetchOrders]);
 
-    const handleOrderAction = (order: Order) => {
-        const statusInfo = getStatusInfo(order.status);
+    const verifyOTP = useCallback(async () => {
+        if (!currentOrder) return;
 
-        if (!statusInfo.nextStatus) {
-            Alert.alert('Info', 'This order is already completed.');
+        if (!confirmationCode || confirmationCode.length !== OTP_LENGTH) {
+            Alert.alert('Validation Error', ALERT_MESSAGES.OTP_VALIDATION);
             return;
         }
 
-        const orderNumber = order.order_number || order.order_id || `#${order.id}`;
-        const customerName = order.customer_name || 'Customer';
+        setUpdatingOrderId(currentOrder.id);
+        try {
+            const token = await StorageManager.getItem(StorageKey.TOKEN);
 
-        // If completing delivery, show confirmation code modal
+            const response = await ApiManager.post({
+                endpoint: constant.apiEndPoints.verifyOTP,
+                params: {
+                    order_id: currentOrder.order_id,
+                    otp: confirmationCode,
+                },
+                token: token || undefined,
+                showError: true,
+                showSuccess: true,
+            });
+
+            if (__DEV__) {
+                console.log('✅ OTP Verification Response:', response);
+            }
+
+            closeOTPModal();
+            Alert.alert('Success', ALERT_MESSAGES.OTP_VERIFICATION_SUCCESS);
+            await fetchOrders(true);
+        } catch (error: any) {
+            console.error('❌ OTP Verification Error:', error);
+            Alert.alert('Error', error.message || ALERT_MESSAGES.OTP_VERIFICATION_FAILED);
+        } finally {
+            setUpdatingOrderId(null);
+        }
+    }, [currentOrder, confirmationCode, fetchOrders]);
+
+    // ========================================================================
+    // EFFECTS
+    // ========================================================================
+
+    useFocusEffect(
+        useCallback(() => {
+            fetchOrders();
+        }, [fetchOrders])
+    );
+
+    // ========================================================================
+    // MODAL MANAGEMENT
+    // ========================================================================
+
+    const openOTPModal = useCallback((order: RiderOrderAssignmentModel) => {
+        setCurrentOrder(order);
+        setConfirmationCode('');
+        setOtpSelection({ start: 0, end: 0 });
+        setShowConfirmationModal(true);
+
+        setTimeout(() => {
+            otpInputRef.current?.focus();
+        }, OTP_INPUT_FOCUS_DELAY);
+    }, []);
+
+    const closeOTPModal = useCallback(() => {
+        setShowConfirmationModal(false);
+        setConfirmationCode('');
+        setCurrentOrder(null);
+        setOtpSelection({ start: 0, end: 0 });
+    }, []);
+
+    // ========================================================================
+    // HANDLERS
+    // ========================================================================
+
+    const onRefresh = useCallback(() => {
+        fetchOrders(true);
+    }, [fetchOrders]);
+
+    const handleOrderAction = useCallback((order: RiderOrderAssignmentModel) => {
+        const orderStatus = getOrderStatus(order);
+        const statusInfo = getStatusInfo(orderStatus, colors.textLabel);
+
+        if (!statusInfo.nextStatus) {
+            Alert.alert('Info', ALERT_MESSAGES.ORDER_COMPLETED);
+            return;
+        }
+
+        const orderNumber = formatOrderNumber(order);
+        const { name: customerName } = getCustomerInfo(order);
+
         if (statusInfo.nextStatus === 'delivered') {
-            setCurrentOrder(order);
-            setConfirmationCode('');
-            setShowConfirmationModal(true);
+            openOTPModal(order);
         } else {
             Alert.alert(
                 statusInfo.action,
@@ -176,15 +318,39 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
                 ]
             );
         }
-    };
+    }, [colors.textLabel, updateOrderStatus, openOTPModal]);
 
-    const handleCallCustomer = (phone: string) => {
-        if (!phone) {
-            Alert.alert('Error', 'Phone number not available');
+    const handleCancelOrder = useCallback((order: RiderOrderAssignmentModel) => {
+        const orderNumber = formatOrderNumber(order);
+        const { name: customerName } = getCustomerInfo(order);
+        const orderStatus = getOrderStatus(order);
+
+        if (!canCancelOrder(orderStatus)) {
+            Alert.alert('Info', ALERT_MESSAGES.ORDER_NOT_CANCELLABLE);
             return;
         }
 
-        const phoneNumber = phone.replace(/[^0-9]/g, ''); // Remove non-numeric characters
+        Alert.alert(
+            'Cancel Order',
+            `Are you sure you want to cancel order ${orderNumber}?\n\nCustomer: ${customerName}\n\nThis action cannot be undone.`,
+            [
+                { text: 'No', style: 'cancel' },
+                {
+                    text: 'Yes, Cancel',
+                    style: 'destructive',
+                    onPress: () => updateOrderStatus(order, 'cancelled'),
+                },
+            ]
+        );
+    }, [updateOrderStatus]);
+
+    const handleCallCustomer = useCallback((phone: string) => {
+        if (!phone) {
+            Alert.alert('Error', ALERT_MESSAGES.PHONE_NOT_AVAILABLE);
+            return;
+        }
+
+        const phoneNumber = sanitizePhoneNumber(phone);
         const phoneUrl = `tel:${phoneNumber}`;
 
         Linking.canOpenURL(phoneUrl)
@@ -192,30 +358,313 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
                 if (supported) {
                     return Linking.openURL(phoneUrl);
                 } else {
-                    Alert.alert('Error', 'Phone calls are not supported on this device');
+                    Alert.alert('Error', ALERT_MESSAGES.PHONE_NOT_SUPPORTED);
                 }
             })
             .catch((err) => {
                 console.error('Error opening phone:', err);
-                Alert.alert('Error', 'Failed to open phone dialer');
+                Alert.alert('Error', ALERT_MESSAGES.PHONE_DIALER_FAILED);
             });
+    }, []);
+
+    const handleOTPChange = useCallback((text: string) => {
+        const numericText = text.replace(/[^0-9]/g, '');
+        if (numericText.length <= OTP_LENGTH) {
+            setConfirmationCode(numericText);
+            const cursorPos = numericText.length;
+            setOtpSelection({ start: cursorPos, end: cursorPos });
+        }
+    }, []);
+
+    const handleOTPFocus = useCallback(() => {
+        const cursorPos = confirmationCode.length === 0 ? 0 : confirmationCode.length;
+        setOtpSelection({ start: cursorPos, end: cursorPos });
+    }, [confirmationCode]);
+
+    const handleOTPSelectionChange = useCallback((e: any) => {
+        setOtpSelection(e.nativeEvent.selection);
+    }, []);
+
+    // ========================================================================
+    // COMPUTED VALUES
+    // ========================================================================
+
+    const isVerifying = updatingOrderId === currentOrder?.id;
+    const isOTPComplete = confirmationCode.length === OTP_LENGTH;
+
+    // ========================================================================
+    // RENDER HELPERS
+    // ========================================================================
+
+    const renderEmptyState = () => (
+        <View style={styles.emptyContainer}>
+            <Text style={styles.emptyIcon}>📦</Text>
+            <Text style={[styles.emptyText, { color: colors.textPrimary }]}>
+                {loading ? 'Loading orders...' : 'No pending orders'}
+            </Text>
+            {!loading && (
+                <Text style={[styles.emptySubtext, { color: colors.textDescription }]}>
+                    New orders will appear here
+                </Text>
+            )}
+        </View>
+    );
+
+    const renderOrderHeader = (order: RiderOrderAssignmentModel, statusInfo: StatusInfo) => (
+        <View style={styles.orderHeader}>
+            <View>
+                <Text style={[styles.orderNumber, { color: colors.themePrimary }]}>
+                    {formatOrderNumber(order)}
+                </Text>
+                {order.created_at && (
+                    <Text style={[styles.assignedTime, { color: colors.textLabel }]}>
+                        Assigned: {new Date(order.created_at).toLocaleString()}
+                    </Text>
+                )}
+                {order.eta && (
+                    <Text style={[styles.assignedTime, { color: colors.textLabel }]}>
+                        ETA: {order.eta}
+                    </Text>
+                )}
+            </View>
+            <View style={[styles.statusBadge, { backgroundColor: statusInfo.color + '20' }]}>
+                <Text style={[styles.statusText, { color: statusInfo.color }]}>
+                    {statusInfo.label}
+                </Text>
+            </View>
+        </View>
+    );
+
+    const renderCustomerInfo = (order: RiderOrderAssignmentModel) => {
+        const { name: customerName, phone: customerPhone } = getCustomerInfo(order);
+        const address = formatAddress(order);
+
+        return (
+            <View style={styles.customerSection}>
+                <View style={styles.infoRow}>
+                    <Text style={styles.infoIcon}>👤</Text>
+                    <Text style={[styles.customerName, { color: colors.textPrimary }]}>
+                        {customerName}
+                    </Text>
+                </View>
+
+                {customerPhone && (
+                    <View style={styles.infoRow}>
+                        <Text style={styles.infoIcon}>📞</Text>
+                        <Text style={[styles.phoneText, { color: colors.textPrimary }]}>
+                            {customerPhone}
+                        </Text>
+                        <AppTouchableRipple
+                            style={[styles.callButton, { backgroundColor: colors.themePrimary }]}
+                            onPress={() => handleCallCustomer(customerPhone)}
+                        >
+                            <Text style={[styles.callButtonText, { color: colors.white }]}>
+                                Call
+                            </Text>
+                        </AppTouchableRipple>
+                    </View>
+                )}
+
+                <View style={styles.infoRow}>
+                    <Text style={styles.infoIcon}>📍</Text>
+                    <Text style={[styles.addressText, { color: colors.textDescription }]}>
+                        {address}
+                    </Text>
+                </View>
+            </View>
+        );
     };
 
-    const formatOrderNumber = (order: Order): string => {
-        return order.order_number || `ORD${order.id}` || `#${order.id}`;
+    const renderOrderDetails = (order: RiderOrderAssignmentModel) => {
+        const amount = formatAmount(order);
+        const itemsCount = formatItemsCount(order);
+
+        return (
+            <View style={[styles.detailsSection, { borderTopColor: colors.border }]}>
+                <View style={styles.detailRow}>
+                    <Text style={[styles.detailLabel, { color: colors.textLabel }]}>Items:</Text>
+                    <Text style={[styles.detailValue, { color: colors.textPrimary }]}>
+                        {itemsCount}
+                    </Text>
+                </View>
+
+                <View style={styles.detailRow}>
+                    <Text style={[styles.detailLabel, { color: colors.textLabel }]}>Amount:</Text>
+                    <Text style={[styles.amountText, { color: colors.themePrimary }]}>
+                        ₹{amount}
+                    </Text>
+                </View>
+
+                <View style={styles.detailRow}>
+                    <Text style={[styles.detailLabel, { color: colors.textLabel }]}>Payment:</Text>
+                    <View style={[styles.codBadge, { backgroundColor: '#ff9800' }]}>
+                        <Text style={[styles.codText, { color: colors.white }]}>COD</Text>
+                    </View>
+                </View>
+            </View>
+        );
     };
 
-    const formatAddress = (order: Order): string => {
-        return order.full_address || order.address || 'Address not available';
+    const renderActionButtons = (order: RiderOrderAssignmentModel, statusInfo: StatusInfo, isUpdating: boolean) => (
+        <View style={styles.actionButtonsContainer}>
+            {statusInfo.nextStatus && (
+                <AppTouchableRipple
+                    style={[
+                        styles.actionButton,
+                        {
+                            backgroundColor: isUpdating ? colors.buttonDisabled : statusInfo.color,
+                            flex: 1,
+                        },
+                    ]}
+                    onPress={() => handleOrderAction(order)}
+                    disabled={isUpdating}
+                >
+                    <Text style={[styles.actionButtonText, { color: colors.white }]}>
+                        {isUpdating ? 'Updating...' : statusInfo.action}
+                    </Text>
+                </AppTouchableRipple>
+            )}
+
+            {shouldShowCancelButton(statusInfo.label) && (
+                <AppTouchableRipple
+                    style={[
+                        styles.cancelButton,
+                        {
+                            backgroundColor: isUpdating ? colors.buttonDisabled : colors.backgroundSecondary,
+                            borderColor: colors.border,
+                            marginLeft: statusInfo.nextStatus ? 12 : 0,
+                        },
+                    ]}
+                    onPress={() => handleCancelOrder(order)}
+                    disabled={isUpdating}
+                >
+                    <Icon name="close-circle" size={18} color={colors.textPrimary} />
+                    <Text style={[styles.cancelButtonText, { color: colors.textPrimary }]}>
+                        Cancel
+                    </Text>
+                </AppTouchableRipple>
+            )}
+        </View>
+    );
+
+    const renderOrderCard = (order: RiderOrderAssignmentModel) => {
+        const orderStatus = getOrderStatus(order);
+        const statusInfo = getStatusInfo(orderStatus, colors.textLabel);
+        const isUpdating = updatingOrderId === order.id;
+
+        return (
+            <View
+                key={order.id}
+                style={[styles.orderCard, { backgroundColor: colors.backgroundSecondary }]}
+            >
+                {renderOrderHeader(order, statusInfo)}
+                {renderCustomerInfo(order)}
+                {renderOrderDetails(order)}
+                {renderActionButtons(order, statusInfo, isUpdating)}
+            </View>
+        );
     };
 
-    const formatAmount = (order: Order): number => {
-        return order.total_amount || order.amount || 0;
-    };
+    const renderOTPModal = () => (
+        <Modal
+            visible={showConfirmationModal}
+            transparent
+            animationType="fade"
+            onRequestClose={closeOTPModal}
+        >
+            <KeyboardAvoidingView
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                style={styles.modalOverlay}
+            >
+                <View style={styles.modalBackdrop}>
+                    <View style={[styles.modernModalContent, { backgroundColor: colors.backgroundPrimary }]}>
+                        {/* Close Button */}
+                        <AppTouchableRipple
+                            style={styles.modernCloseButton}
+                            onPress={closeOTPModal}
+                        >
+                            <Icon name="close" size={24} color={colors.textLabel} />
+                        </AppTouchableRipple>
 
-    const formatItemsCount = (order: Order): number => {
-        return order.items_count || 0;
-    };
+                        {/* Icon Header */}
+                        <View style={[styles.modalIconContainer, { backgroundColor: colors.themePrimaryLight }]}>
+                            <Icon name="shield-lock-outline" size={48} color={colors.themePrimary} />
+                        </View>
+
+                        {/* Title */}
+                        <Text style={[styles.modernModalTitle, { color: colors.textPrimary }]}>
+                            Verify Delivery
+                        </Text>
+
+                        {/* Subtitle */}
+                        <Text style={[styles.modernModalSubtitle, { color: colors.textDescription }]}>
+                            Enter the {OTP_LENGTH}-digit OTP code from the customer
+                        </Text>
+
+                        {/* OTP Input */}
+                        <View style={styles.otpInputContainer}>
+                            <TextInput
+                                ref={otpInputRef}
+                                style={[
+                                    styles.modernOtpInput,
+                                    {
+                                        borderColor: isOTPComplete ? colors.themePrimary : colors.border,
+                                        color: colors.textPrimary,
+                                        backgroundColor: colors.backgroundSecondary,
+                                    },
+                                ]}
+                                value={confirmationCode}
+                                onChangeText={handleOTPChange}
+                                placeholder="••••"
+                                placeholderTextColor={colors.textLabel}
+                                keyboardType="number-pad"
+                                maxLength={OTP_LENGTH}
+                                autoFocus={false}
+                                editable={!isVerifying}
+                                textAlign="center"
+                                selection={otpSelection}
+                                onSelectionChange={handleOTPSelectionChange}
+                                onFocus={handleOTPFocus}
+                            />
+                        </View>
+
+                        {/* Action Button */}
+                        <View style={styles.modernModalActions}>
+                            <AppTouchableRipple
+                                style={[
+                                    styles.modernVerifyButton,
+                                    {
+                                        backgroundColor: isVerifying || !isOTPComplete
+                                            ? colors.buttonDisabled
+                                            : colors.themePrimary,
+                                    },
+                                ]}
+                                onPress={verifyOTP}
+                                disabled={isVerifying || !isOTPComplete}
+                            >
+                                {isVerifying ? (
+                                    <Text style={[styles.modernButtonText, { color: colors.white }]}>
+                                        Verifying...
+                                    </Text>
+                                ) : (
+                                    <>
+                                        <Icon name="check-circle" size={20} color={colors.white} />
+                                        <Text style={[styles.modernButtonText, { color: colors.white }]}>
+                                            Verify & Complete
+                                        </Text>
+                                    </>
+                                )}
+                            </AppTouchableRipple>
+                        </View>
+                    </View>
+                </View>
+            </KeyboardAvoidingView>
+        </Modal>
+    );
+
+    // ========================================================================
+    // MAIN RENDER
+    // ========================================================================
 
     return (
         <MainContainer
@@ -227,9 +676,7 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
             <View style={[styles.container, { backgroundColor: colors.backgroundPrimary }]}>
                 {/* Header */}
                 <View style={[styles.header, { backgroundColor: colors.themePrimary }]}>
-                    <Text style={[styles.headerTitle, { color: colors.white }]}>
-                        My Orders
-                    </Text>
+                    <Text style={[styles.headerTitle, { color: colors.white }]}>My Orders</Text>
                     <View style={[styles.countBadge, { backgroundColor: colors.white }]}>
                         <Text style={[styles.countText, { color: colors.themePrimary }]}>
                             {orders.length}
@@ -250,177 +697,26 @@ const RiderOrdersScreen: React.FC<Props> = ({ navigation }) => {
                         />
                     }
                 >
-                    {loading && orders.length === 0 ? (
-                        <View style={styles.emptyContainer}>
-                            <Text style={styles.emptyIcon}>⏳</Text>
-                            <Text style={[styles.emptyText, { color: colors.textPrimary }]}>
-                                Loading orders...
-                            </Text>
-                        </View>
-                    ) : orders.length === 0 ? (
-                        <View style={styles.emptyContainer}>
-                            <Text style={styles.emptyIcon}>📦</Text>
-                            <Text style={[styles.emptyText, { color: colors.textPrimary }]}>
-                                No pending orders
-                            </Text>
-                            <Text style={[styles.emptySubtext, { color: colors.textDescription }]}>
-                                New orders will appear here
-                            </Text>
-                        </View>
-                    ) : (
-                        orders.map((order) => {
-                            const statusInfo = getStatusInfo(order.status);
-                            const orderNumber = formatOrderNumber(order);
-                            const customerName = order.customer_name || 'Customer';
-                            const customerPhone = order.customer_phone || '';
-                            const address = formatAddress(order);
-                            const amount = formatAmount(order);
-                            const itemsCount = formatItemsCount(order);
-                            const isUpdating = updatingOrderId === order.id;
-
-                            return (
-                                <View
-                                    key={order.id}
-                                    style={[
-                                        styles.orderCard,
-                                        { backgroundColor: colors.backgroundSecondary },
-                                    ]}
-                                >
-                                    {/* Order Header */}
-                                    <View style={styles.orderHeader}>
-                                        <View>
-                                            <Text style={[styles.orderNumber, { color: colors.themePrimary }]}>
-                                                {orderNumber}
-                                            </Text>
-                                            {order.assigned_at && (
-                                                <Text style={[styles.assignedTime, { color: colors.textLabel }]}>
-                                                    Assigned: {new Date(order.assigned_at).toLocaleString()}
-                                                </Text>
-                                            )}
-                                        </View>
-                                        <View
-                                            style={[
-                                                styles.statusBadge,
-                                                { backgroundColor: statusInfo.color + '20' },
-                                            ]}
-                                        >
-                                            <Text
-                                                style={[
-                                                    styles.statusText,
-                                                    { color: statusInfo.color },
-                                                ]}
-                                            >
-                                                {statusInfo.label}
-                                            </Text>
-                                        </View>
-                                    </View>
-
-                                    {/* Customer Info */}
-                                    <View style={styles.customerSection}>
-                                        <View style={styles.infoRow}>
-                                            <Text style={styles.infoIcon}>👤</Text>
-                                            <Text style={[styles.customerName, { color: colors.textPrimary }]}>
-                                                {customerName}
-                                            </Text>
-                                        </View>
-
-                                        {customerPhone && (
-                                            <View style={styles.infoRow}>
-                                                <Text style={styles.infoIcon}>📞</Text>
-                                                <Text style={[styles.phoneText, { color: colors.textPrimary }]}>
-                                                    {customerPhone}
-                                                </Text>
-                                                <AppTouchableRipple
-                                                    style={[styles.callButton, { backgroundColor: colors.themePrimary }]}
-                                                    onPress={() => handleCallCustomer(customerPhone)}
-                                                >
-                                                    <Text style={[styles.callButtonText, { color: colors.white }]}>
-                                                        Call
-                                                    </Text>
-                                                </AppTouchableRipple>
-                                            </View>
-                                        )}
-
-                                        <View style={styles.infoRow}>
-                                            <Text style={styles.infoIcon}>📍</Text>
-                                            <Text style={[styles.addressText, { color: colors.textDescription }]}>
-                                                {address}
-                                            </Text>
-                                        </View>
-                                    </View>
-
-                                    {/* Order Details */}
-                                    <View style={[styles.detailsSection, { borderTopColor: colors.border }]}>
-                                        <View style={styles.detailRow}>
-                                            <Text style={[styles.detailLabel, { color: colors.textLabel }]}>
-                                                Items:
-                                            </Text>
-                                            <Text style={[styles.detailValue, { color: colors.textPrimary }]}>
-                                                {itemsCount}
-                                            </Text>
-                                        </View>
-
-                                        <View style={styles.detailRow}>
-                                            <Text style={[styles.detailLabel, { color: colors.textLabel }]}>
-                                                Amount:
-                                            </Text>
-                                            <Text
-                                                style={[
-                                                    styles.amountText,
-                                                    { color: colors.themePrimary },
-                                                ]}
-                                            >
-                                                ₹{amount}
-                                            </Text>
-                                        </View>
-
-                                        <View style={styles.detailRow}>
-                                            <Text style={[styles.detailLabel, { color: colors.textLabel }]}>
-                                                Payment:
-                                            </Text>
-                                            <View
-                                                style={[
-                                                    styles.codBadge,
-                                                    { backgroundColor: '#ff9800' },
-                                                ]}
-                                            >
-                                                <Text style={[styles.codText, { color: colors.white }]}>
-                                                    {order.payment_mode || 'COD'}
-                                                </Text>
-                                            </View>
-                                        </View>
-                                    </View>
-
-                                    {/* Action Button */}
-                                    {statusInfo.nextStatus && (
-                                        <AppTouchableRipple
-                                            style={[
-                                                styles.actionButton,
-                                                {
-                                                    backgroundColor: isUpdating
-                                                        ? colors.buttonDisabled
-                                                        : statusInfo.color,
-                                                },
-                                            ]}
-                                            onPress={() => handleOrderAction(order)}
-                                            disabled={isUpdating}
-                                        >
-                                            <Text style={[styles.actionButtonText, { color: colors.white }]}>
-                                                {isUpdating ? 'Updating...' : statusInfo.action}
-                                            </Text>
-                                        </AppTouchableRipple>
-                                    )}
-                                </View>
-                            );
-                        })
-                    )}
+                    {loading && orders.length === 0
+                        ? renderEmptyState()
+                        : orders.length === 0
+                            ? renderEmptyState()
+                            : orders.map(renderOrderCard)
+                    }
                 </ScrollView>
             </View>
+
+            {/* OTP Modal */}
+            {renderOTPModal()}
         </MainContainer>
     );
 };
 
 export default RiderOrdersScreen;
+
+// ============================================================================
+// STYLES
+// ============================================================================
 
 const styles = StyleSheet.create({
     container: {
@@ -580,104 +876,121 @@ const styles = StyleSheet.create({
         fontSize: fonts.size.font12,
         fontFamily: fonts.family.primaryBold,
     },
+    actionButtonsContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
     actionButton: {
         paddingVertical: 14,
         borderRadius: 10,
         alignItems: 'center',
+        flex: 1,
     },
     actionButtonText: {
         fontSize: fonts.size.font15,
         fontFamily: fonts.family.primaryBold,
     },
+    cancelButton: {
+        flexDirection: 'row',
+        paddingVertical: 14,
+        paddingHorizontal: 16,
+        borderRadius: 10,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderWidth: 1,
+        gap: 6,
+    },
+    cancelButtonText: {
+        fontSize: fonts.size.font15,
+        fontFamily: fonts.family.primaryMedium,
+    },
+
+    // Modern Modal Styles
     modalOverlay: {
         flex: 1,
-        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    },
+    modalBackdrop: {
+        flex: 1,
+        backgroundColor: 'rgba(0, 0, 0, 0.6)',
         justifyContent: 'center',
         alignItems: 'center',
-        padding: 20,
+        padding: 24,
     },
-    modalContent: {
+    modernModalContent: {
         width: '100%',
         maxWidth: 400,
-        borderRadius: 16,
-        padding: 0,
-        elevation: 8,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 8,
-    },
-    modalHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
+        borderRadius: 24,
+        padding: 32,
         alignItems: 'center',
-        padding: 20,
-        borderBottomWidth: 1,
-        borderBottomColor: '#E0E0E0',
+        elevation: 10,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.3,
+        shadowRadius: 16,
     },
-    modalTitle: {
-        fontSize: fonts.size.font18,
-        fontFamily: fonts.family.primaryBold,
-    },
-    modalCloseButton: {
-        width: 32,
-        height: 32,
-        borderRadius: 16,
-        backgroundColor: '#F5F5F5',
+    modernCloseButton: {
+        position: 'absolute',
+        top: 16,
+        right: 16,
+        width: 40,
+        height: 40,
+        borderRadius: 20,
         justifyContent: 'center',
         alignItems: 'center',
+        zIndex: 1,
     },
-    modalBody: {
-        padding: 20,
+    modalIconContainer: {
+        width: 96,
+        height: 96,
+        borderRadius: 48,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 24,
     },
-    orderInfoBox: {
-        backgroundColor: '#F5F5F5',
-        padding: 12,
-        borderRadius: 8,
-        marginBottom: 16,
-    },
-    orderInfoText: {
-        fontSize: fonts.size.font13,
-        fontFamily: fonts.family.secondaryRegular,
-        marginBottom: 4,
-    },
-    modalLabel: {
-        fontSize: fonts.size.font14,
-        fontFamily: fonts.family.primaryMedium,
+    modernModalTitle: {
+        fontSize: fonts.size.font24,
+        fontFamily: fonts.family.primaryBold,
         marginBottom: 12,
-    },
-    confirmationInput: {
-        borderWidth: 1.5,
-        borderRadius: 10,
-        padding: 16,
-        fontSize: fonts.size.font18,
-        fontFamily: fonts.family.primaryBold,
         textAlign: 'center',
-        letterSpacing: 8,
-        marginBottom: 20,
     },
-    modalActions: {
-        flexDirection: 'row',
-        gap: 12,
+    modernModalSubtitle: {
+        fontSize: fonts.size.font14,
+        fontFamily: fonts.family.secondaryRegular,
+        textAlign: 'center',
+        marginBottom: 32,
+        lineHeight: 20,
     },
-    modalCancelButton: {
-        flex: 1,
-        paddingVertical: 14,
-        borderRadius: 10,
-        alignItems: 'center',
+    otpInputContainer: {
+        width: '100%',
+        marginBottom: 32,
     },
-    modalCancelText: {
-        fontSize: fonts.size.font15,
+    modernOtpInput: {
+        borderWidth: 2,
+        borderRadius: 16,
+        padding: 20,
+        fontSize: fonts.size.font30,
         fontFamily: fonts.family.primaryBold,
+        letterSpacing: 16,
+        textAlign: 'center',
     },
-    modalConfirmButton: {
-        flex: 1,
-        paddingVertical: 14,
-        borderRadius: 10,
+    modernModalActions: {
+        width: '100%',
+    },
+    modernVerifyButton: {
+        flexDirection: 'row',
+        paddingVertical: 16,
+        borderRadius: 16,
         alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        elevation: 4,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.2,
+        shadowRadius: 8,
     },
-    modalConfirmText: {
-        fontSize: fonts.size.font15,
+    modernButtonText: {
+        fontSize: fonts.size.font16,
         fontFamily: fonts.family.primaryBold,
     },
 });

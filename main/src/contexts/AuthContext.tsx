@@ -1,11 +1,12 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import StorageManager from '../managers/StorageManager';
+import StorageManager, { StorageKey } from '../managers/StorageManager';
 import constant from '../utilities/constant';
+import { DeliveryPersonModel } from '../dataModels/models';
 
 interface AuthContextType {
     isLoggedIn: boolean;
     isLoading: boolean;
-    login: (token: string, userData?: any) => Promise<void>;
+    login: (token: string, userData?: DeliveryPersonModel) => Promise<void>;
     logout: () => Promise<void>;
 }
 
@@ -26,7 +27,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     const checkLoginStatus = async () => {
         try {
             await StorageManager.sync();
-            const token = await StorageManager.getItem(constant.shareInstanceKey.authToken);
+            const token = await StorageManager.getItem(StorageKey.TOKEN);
             console.log('🔍 Auth Check:', token ? 'Logged in ✅' : 'Not logged in ❌');
             setIsLoggedIn(!!token);
         } catch (error) {
@@ -41,10 +42,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         try {
             console.log('💾 Storing auth data...');
 
-            await StorageManager.setItem(constant.shareInstanceKey.authToken, token);
+            await StorageManager.setItem(StorageKey.TOKEN, token);
 
             if (userData) {
-                await StorageManager.setItem(constant.shareInstanceKey.userData, userData);
+                await StorageManager.setItem(StorageKey.USER, userData);
             }
 
             console.log('✅ Auth data stored successfully');
